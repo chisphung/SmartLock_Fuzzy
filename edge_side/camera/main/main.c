@@ -18,9 +18,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define WIFI_SSID "lmaoindex"
-#define WIFI_PASS "khongphaiwibu"
-#define SERVER_URI "ws://10.231.182.129:8080"
+#define WIFI_SSID "nhmc"
+#define WIFI_PASS "14112005"
+#define SERVER_URI "ws://10.0.4.106:8080"
 
 // CSI Configuration
 #define CSI_ENABLED 1 // Set to 1 to enable CSI data sending, 0 to disable
@@ -28,7 +28,7 @@
 #define CSI_BUFFER_SIZE 128      // Number of subcarriers
 
 // WebSocket Configuration
-#define WS_SEND_TIMEOUT_MS 1000 // Timeout for WebSocket sends
+#define WS_SEND_TIMEOUT_MS 100 // Timeout for WebSocket sends
 #define FRAME_INTERVAL_MS                                                      \
   100 // ~10 FPS target (was 50ms/20FPS - reduced for stability)
 #define WS_RECONNECT_DELAY_MS 2000 // Wait before reconnecting

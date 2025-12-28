@@ -3,8 +3,8 @@
   "idf.espIdfPathWin": "C:\\Users\\Admin\\esp\\v5.5.1\\esp-idf",
   "idf.pythonInstallPath": "C:\\Users\\Admin\\.espressif\\tools\\idf-python\\3.11.2\\python.exe",
   "idf.openOcdConfigs": [
-    "interface/ftdi/esp32_devkitj_v1.cfg",
-    "target/esp32.cfg"
+    "interface/ftdi/esp_ftdi.cfg",
+    "target/esp32-solo-1.cfg"
   ],
   "idf.toolsPathWin": "C:\\Users\\Admin\\.espressif",
   "idf.customExtraVars": {
@@ -16,6 +16,6 @@
     "--query-driver=C:\\Users\\Admin\\.espressif\\tools\\xtensa-esp-elf\\esp-14.2.0_20241119\\xtensa-esp-elf\\bin\\xtensa-esp32-elf-gcc.exe",
     "--compile-commands-dir=${workspaceFolder}\\build"
   ],
-  "idf.portWin": "COM7",
+  "idf.portWin": "COM8",
   "idf.flashType": "UART"
 }

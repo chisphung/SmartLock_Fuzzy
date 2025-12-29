@@ -188,7 +188,6 @@ export default function Home() {
               
               <LiveVideoStream 
                 onCountUpdate={setCameraCount}
-                pollInterval={300}
               />
             </div>
 

@@ -1,0 +1,76 @@
+# Cloud Build configuration for People Counting API Backend
+# Builds and deploys to Cloud Run
+#
+# Run from repo root: gcloud builds submit --config server_side/cloudbuild.yaml
+
+steps:
+  # Build the Docker image
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/people-counting-api:$COMMIT_SHA"
+      - "-t"
+      - "gcr.io/$PROJECT_ID/people-counting-api:latest"
+      - "-f"
+      - "server_side/Dockerfile"
+      - "server_side"
+    timeout: "1200s"
+
+  # Push the Docker image to Container Registry
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/people-counting-api:$COMMIT_SHA"
+
+  - name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "gcr.io/$PROJECT_ID/people-counting-api:latest"
+
+  # Deploy to Cloud Run with extended startup timeout
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    entrypoint: "gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "people-counting-api"
+      - "--image"
+      - "gcr.io/$PROJECT_ID/people-counting-api:$COMMIT_SHA"
+      - "--region"
+      - "${_REGION}"
+      - "--platform"
+      - "managed"
+      - "--allow-unauthenticated"
+      - "--memory"
+      - "${_MEMORY}"
+      - "--cpu"
+      - "${_CPU}"
+      - "--port"
+      - "8000"
+      - "--timeout"
+      - "300"
+      - "--cpu-boost"
+      - "--no-cpu-throttling"
+      - "--min-instances"
+      - "0"
+      - "--max-instances"
+      - "10"
+
+# Substitution variables
+substitutions:
+  _REGION: "asia-east1"
+  _MEMORY: "4Gi"
+  _CPU: "2"
+
+# Build options
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"
+
+# Store images
+images:
+  - "gcr.io/$PROJECT_ID/people-counting-api:$COMMIT_SHA"
+  - "gcr.io/$PROJECT_ID/people-counting-api:latest"
+
+timeout: "1200s"

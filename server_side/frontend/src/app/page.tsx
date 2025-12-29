@@ -1,12 +1,40 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import ImageUploader from '@/components/ImageUploader';
 import BoundingBoxCanvas from '@/components/BoundingBoxCanvas';
 import StatsPanel from '@/components/StatsPanel';
 import Header from '@/components/Header';
 import LiveVideoStream from '@/components/LiveVideoStream';
+import CSIChart from '@/components/CSIChart';
 import { Detection, CountResult } from '@/types';
+
+type CountingMode = 'camera' | 'csi' | 'fusion';
+
+interface CSIStats {
+  total_samples: number;
+  buffer_size: number;
+  motion_detected: boolean;
+  motion_level: number;
+  rssi_variance: number;
+  amplitude_variance: number;
+  avg_rssi: number;
+  avg_subcarriers: number;
+}
+
+interface CSIReading {
+  rssi: number;
+  subcarrier_count: number;
+  people_count: number;
+}
+
+interface FusionData {
+  fusion_count: number;
+  camera_count: number;
+  csi_count: number;
+  camera_weight: number;
+  csi_weight: number;
+}
 
 export default function Home() {
   const [result, setResult] = useState<CountResult | null>(null);
@@ -15,17 +43,89 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<CountResult[]>([]);
   const [showUpload, setShowUpload] = useState(false);
-  const [liveCount, setLiveCount] = useState(0);
+  
+  // Counting mode and counts
+  const [countingMode, setCountingMode] = useState<CountingMode>('camera');
+  const [cameraCount, setCameraCount] = useState(0);
+  const [fusionData, setFusionData] = useState<FusionData | null>(null);
+  
+  // CSI data
+  const [csiStats, setCsiStats] = useState<CSIStats | null>(null);
+  const [csiBuffer, setCsiBuffer] = useState<CSIReading[]>([]);
+
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+
+  // Fetch CSI stats
+  const fetchCSIStats = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/csi/stats`);
+      if (response.ok) {
+        const data = await response.json();
+        setCsiStats(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch CSI stats:', err);
+    }
+  }, [apiUrl]);
+
+  // Fetch CSI buffer
+  const fetchCSIBuffer = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/csi/buffer?limit=10`);
+      if (response.ok) {
+        const data = await response.json();
+        setCsiBuffer(data.data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch CSI buffer:', err);
+    }
+  }, [apiUrl]);
+
+  // Fetch fusion count from backend
+  const fetchFusionCount = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiUrl}/api/v1/count/fusion`);
+      if (response.ok) {
+        const data = await response.json();
+        setFusionData(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch fusion count:', err);
+    }
+  }, [apiUrl]);
+
+  // Poll data
+  useEffect(() => {
+    fetchCSIStats();
+    fetchCSIBuffer();
+    fetchFusionCount();
+    
+    const interval = setInterval(() => {
+      fetchCSIStats();
+      fetchCSIBuffer();
+      fetchFusionCount();
+    }, 1000);
+    
+    return () => clearInterval(interval);
+  }, [fetchCSIStats, fetchCSIBuffer, fetchFusionCount]);
+
+  // Get displayed count based on mode
+  const getDisplayedCount = () => {
+    switch (countingMode) {
+      case 'camera': return cameraCount;
+      case 'csi': return fusionData?.csi_count ?? 0;
+      case 'fusion': return fusionData?.fusion_count ?? 0;
+    }
+  };
 
   const handleResult = (newResult: CountResult, imageData: string) => {
     setResult(newResult);
     setOriginalImage(imageData);
     setError(null);
     
-    // Add to history
     setHistory(prev => [
       { ...newResult, timestamp: new Date().toISOString() },
-      ...prev.slice(0, 9) // Keep last 10 results
+      ...prev.slice(0, 9)
     ]);
   };
 
@@ -39,9 +139,48 @@ export default function Home() {
       <Header />
       
       <div className="container mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Main Content - Live Stream */}
-          <div className="lg:col-span-3 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column - Camera Feed & Upload */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Mode Selector */}
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-4">
+              <div className="flex items-center justify-between flex-wrap gap-4">
+                <h3 className="text-white font-semibold">Counting Mode</h3>
+                <div className="flex space-x-2">
+                  <button
+                    onClick={() => setCountingMode('camera')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                      countingMode === 'camera'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    📷 Camera
+                  </button>
+                  <button
+                    onClick={() => setCountingMode('csi')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                      countingMode === 'csi'
+                        ? 'bg-green-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    📡 CSI
+                  </button>
+                  <button
+                    onClick={() => setCountingMode('fusion')}
+                    className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                      countingMode === 'fusion'
+                        ? 'bg-purple-600 text-white'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                  >
+                    🔀 Fusion ({fusionData ? `${Math.round(fusionData.camera_weight*100)}/${Math.round(fusionData.csi_weight*100)}` : '80/20'})
+                  </button>
+                </div>
+              </div>
+            </div>
+
             {/* Live Video Stream */}
             <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-2xl border border-gray-700/50 p-6">
               <div className="flex items-center justify-between mb-4">
@@ -49,11 +188,17 @@ export default function Home() {
                   <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
                   <span>Live Camera Feed</span>
                 </h2>
+                {/* Active Count Badge */}
+                <div className={`px-4 py-2 rounded-xl text-white font-bold ${
+                  countingMode === 'camera' ? 'bg-blue-600' :
+                  countingMode === 'csi' ? 'bg-green-600' : 'bg-purple-600'
+                }`}>
+                  {getDisplayedCount()} people
+                </div>
               </div>
               
               <LiveVideoStream 
-                onCountUpdate={setLiveCount}
-                pollInterval={300}
+                onCountUpdate={setCameraCount}
               />
             </div>
             
@@ -94,7 +239,6 @@ export default function Home() {
                     </div>
                   )}
                   
-                  {/* Upload Results */}
                   {isLoading ? (
                     <div className="flex items-center justify-center h-48">
                       <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
@@ -111,13 +255,53 @@ export default function Home() {
             </div>
           </div>
           
-          {/* Side Panel - Stats */}
+          {/* Right Column - CSI Motion Detection & Stats */}
           <div className="lg:col-span-1 space-y-6">
-            {/* Live Count Card */}
-            <div className="bg-gradient-to-br from-blue-600 to-purple-700 rounded-2xl shadow-xl p-6 text-white">
-              <div className="text-sm font-medium opacity-80 mb-1">Live People Count</div>
-              <div className="text-5xl font-bold">{liveCount}</div>
-              <div className="text-xs opacity-60 mt-2">Real-time detection</div>
+            {/* CSI Motion Detection Panel */}
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-4">
+              <h3 className="text-lg font-bold text-white mb-3 flex items-center space-x-2">
+                <span>📡</span>
+                <span>WiFi CSI Motion Detection</span>
+              </h3>
+              <CSIChart />
+            </div>
+
+            {/* Count Summary Card */}
+            <div className={`rounded-2xl shadow-xl p-4 text-white ${
+              countingMode === 'camera' ? 'bg-gradient-to-br from-blue-600 to-blue-800' :
+              countingMode === 'csi' ? 'bg-gradient-to-br from-green-600 to-green-800' :
+              'bg-gradient-to-br from-purple-600 to-purple-800'
+            }`}>
+              <div className="text-sm font-medium opacity-80 mb-1">
+                {countingMode === 'camera' ? '📷 Camera Count' :
+                 countingMode === 'csi' ? '📡 CSI Count' :
+                 '🔀 Fusion Count'}
+              </div>
+              <div className="text-4xl font-bold">{getDisplayedCount()}</div>
+              <div className="text-xs opacity-60 mt-1">
+                {countingMode === 'fusion' && fusionData
+                  ? `${fusionData.camera_count} × ${fusionData.camera_weight} + ${fusionData.csi_count} × ${fusionData.csi_weight}`
+                  : 'Real-time detection'}
+              </div>
+            </div>
+
+            {/* All Counts Summary */}
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-4">
+              <h4 className="text-white font-semibold mb-3">All Counts</h4>
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-400">📷 Camera</span>
+                  <span className="text-white font-bold">{cameraCount}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-400">📡 CSI</span>
+                  <span className="text-white font-bold">{fusionData?.csi_count ?? 0}</span>
+                </div>
+                <div className="flex justify-between items-center border-t border-gray-700 pt-2">
+                  <span className="text-gray-400">🔀 Fusion</span>
+                  <span className="text-white font-bold">{fusionData?.fusion_count ?? 0}</span>
+                </div>
+              </div>
             </div>
             
             {/* Stats Panel */}

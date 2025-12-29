@@ -7,11 +7,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import count_people
+from routers import count_people, csi
 
 app = FastAPI(
     title="People Counting API",
-    description="API for counting people using YOLOv11",
+    description="API for counting people using YOLOv11 and WiFi CSI",
     version="1.0.0",
 )
 
@@ -24,6 +24,7 @@ app.add_middleware(
 )
 
 app.include_router(count_people.router, prefix="/api/v1", tags=["people-counting"])
+app.include_router(csi.router, prefix="/api/v1/csi", tags=["csi"])
 
 
 @app.get("/", tags=["root"])
@@ -37,6 +38,7 @@ async def root():
         "docs": "/docs",
         "health": "/health",
         "count_people": "/api/v1/count",
+        "csi": "/api/v1/csi",
     }
 
 

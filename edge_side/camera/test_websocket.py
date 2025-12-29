@@ -16,13 +16,10 @@ clients: set[websockets.WebSocketServerProtocol] = set()
 frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
 stop_event = threading.Event()
 
-DEFAULT_CAMERA_SETTINGS = {
-    "brightness": 1,
-    "contrast": 1,
-    "saturation": 1,
-    "quality": 8,
-    "framesize": 5,
-}
+# Camera settings - no longer auto-sent on connect to avoid JSON errors on ESP32
+# Uncomment and modify below if you want to send settings manually:
+# CAMERA_SETTINGS = {"brightness": 1, "contrast": 1, "saturation": 1, "quality": 20}
+DEFAULT_CAMERA_SETTINGS = None  # Set to dict to auto-send on connect
 
 
 def display_loop() -> None:

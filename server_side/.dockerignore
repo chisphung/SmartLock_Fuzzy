@@ -1,0 +1,12 @@
+# Ignore files for Docker build
+__pycache__
+*.pyc
+*.pyo
+.git
+*.md
+.env
+.venv
+venv
+*.egg-info
+.pytest_cache
+.DS_Store

@@ -17,5 +17,12 @@
 			]
 		}
 	},
-	"runArgs": ["--privileged"]
+	"runArgs": [
+		"--privileged",
+		"--device=/dev/ttyUSB0:/dev/ttyUSB0",
+		"--device=/dev/ttyACM0:/dev/ttyACM0"
+	],
+	"mounts": [
+		"type=bind,source=/dev/bus/usb,target=/dev/bus/usb"
+	]
 }

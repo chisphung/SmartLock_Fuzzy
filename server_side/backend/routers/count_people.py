@@ -25,20 +25,18 @@ from schema.count_people import (
 
 router = APIRouter()
 
-# Path to weights (relative to infra folder)
-WEIGHTS_PATH = os.path.join(
+# Path to weights - use environment variable or default
+WEIGHTS_PATH = os.environ.get("WEIGHTS_PATH", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "infra",
     "weights",
     "yolov11n_ncnn_model"
-)
+))
 
 # Output directory for annotated images
-OUTPUT_DIR = os.path.join(
+OUTPUT_DIR = os.environ.get("OUTPUT_DIR", os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "infra",
     "tmp"
-)
+))
 
 # Ensure output directory exists
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -345,3 +343,38 @@ async def get_stream_frame():
     }
 
 
+@router.get("/count/fusion")
+async def get_fusion_count(camera_weight: float = 0.8, csi_weight: float = 0.2):
+    """
+    Get weighted fusion count combining camera and CSI detection.
+    
+    Args:
+        camera_weight: Weight for camera-based count (default: 0.8)
+        csi_weight: Weight for CSI-based count (default: 0.2)
+    
+    Returns:
+        Fusion count and individual counts from each source.
+    """
+    # Import CSI data from csi router
+    from routers.csi import _csi_buffer
+    
+    camera_count = _latest_counts["people_count"]
+    
+    # Get latest CSI count
+    csi_count = 0
+    if _csi_buffer and len(_csi_buffer) > 0:
+        csi_count = _csi_buffer[-1].get("people_count", 0)
+    
+    # Calculate weighted fusion
+    fusion_count = round(camera_count * camera_weight + csi_count * csi_weight)
+    
+    return {
+        "success": True,
+        "fusion_count": fusion_count,
+        "camera_count": camera_count,
+        "csi_count": csi_count,
+        "camera_weight": camera_weight,
+        "csi_weight": csi_weight,
+        "timestamp": _latest_counts["timestamp"],
+        "mode": "weighted_fusion"
+    }

@@ -28,6 +28,8 @@ import time
 from contextlib import suppress
 from datetime import datetime
 from typing import Optional
+from ultralytics import YOLO 
+
 
 import cv2
 import numpy as np
@@ -41,14 +43,16 @@ from ultralytics import YOLO
 
 # Configuration
 DEFAULT_WS_PORT = 8080
-DEFAULT_SERVER_URL = "http://localhost:8000"
-DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights", "yolov11n_ncnn_model")
+DEFAULT_SERVER_URL = "https://people-counting-api-304130190385.asia-east1.run.app"
+DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights", "yolo11n_ncnn_model_coco")
 
 # Global state
-clients: set[websockets.WebSocketServerProtocol] = set()
+camera_clients: set[websockets.WebSocketServerProtocol] = set()  # ESP32 cameras
+viewer_clients: set[websockets.WebSocketServerProtocol] = set()   # Frontend viewers
 frame_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=3)
 stop_event = threading.Event()
 latest_count: dict = {"people_count": 0, "timestamp": None, "detections": []}
+latest_frame_base64: str | None = None  # Cached frame for new viewers
 
 # Default camera settings sent to ESP32
 DEFAULT_CAMERA_SETTINGS = {
@@ -66,6 +70,8 @@ class PeopleCounter:
         self.conf = conf
         self.device = device
         self.model: Optional[YOLO] = None
+        # self.model = timm.create_model('mobilenetv3_large_100', pretrained=True)
+        # self.model.eval()
         self.weights_path = weights_path
         
     def load_model(self):
@@ -87,12 +93,13 @@ class PeopleCounter:
         """
         self.load_model()
         
-        # Run inference
+        # Run inference - only detect person class (class 0 in COCO)
         results = self.model.predict(
             source=image,
             conf=self.conf,
             device=self.device,
-            verbose=False
+            verbose=False,
+            classes=[0]  # Only detect "person" class (COCO class ID 0)
         )
         
         detections = []
@@ -196,7 +203,104 @@ async def send_to_server(server_url: str, result: dict) -> bool:
         return False
 
 
-async def handle_client(
+async def send_to_server_background(server_url: str, result: dict) -> None:
+    """Fire-and-forget background task to send results to backend server."""
+    endpoint = f"{server_url}/api/v1/count/edge"
+    
+    # Encode annotated frame as base64 JPEG
+    frame_base64 = None
+    if "annotated_image" in result and result["annotated_image"] is not None:
+        success, buffer = cv2.imencode('.jpg', result["annotated_image"], [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if success:
+            frame_base64 = base64.b64encode(buffer).decode('utf-8')
+    
+    payload = {
+        "people_count": result["people_count"],
+        "detections": result["detections"],
+        "timestamp": result["timestamp"],
+        "frame_base64": frame_base64
+    }
+    
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None,
+            lambda: requests.post(endpoint, json=payload, timeout=2)  # Shorter timeout
+        )
+    except Exception:
+        # Silently fail - this is fire-and-forget
+        pass
+
+
+async def broadcast_to_viewers(result: dict, frame_base64: str | None) -> None:
+    """Broadcast inference results to all connected frontend viewers."""
+    global latest_frame_base64
+    
+    if not viewer_clients:
+        return
+    
+    # Cache the frame for new viewers
+    latest_frame_base64 = frame_base64
+    
+    message = json.dumps({
+        "type": "inference_result",
+        "people_count": result["people_count"],
+        "detections": result["detections"],
+        "timestamp": result["timestamp"],
+        "frame_base64": frame_base64
+    })
+    
+    # Copy the set to avoid modification during iteration
+    viewers_snapshot = list(viewer_clients)
+    
+    # Send to all viewers concurrently
+    async def safe_send(viewer):
+        try:
+            await viewer.send(message)
+            return None
+        except websockets.ConnectionClosed:
+            return viewer
+    
+    results = await asyncio.gather(*[safe_send(v) for v in viewers_snapshot], return_exceptions=True)
+    
+    # Remove disconnected viewers
+    disconnected = {r for r in results if r is not None and not isinstance(r, Exception)}
+    if disconnected:
+        viewer_clients.difference_update(disconnected)
+        print(f"[Broadcast] Removed {len(disconnected)} disconnected viewer(s)")
+
+
+async def send_csi_to_server(server_url: str, csi_data: dict, people_count: int) -> bool:
+    """Send CSI data to the backend server for storage and training."""
+    endpoint = f"{server_url}/api/v1/csi/data"
+    
+    payload = {
+        "timestamp": csi_data.get("timestamp"),
+        "rssi": csi_data.get("rssi"),
+        "amplitudes": csi_data.get("amplitudes", []),
+        "people_count": people_count,  # Ground truth from camera
+        "subcarrier_count": len(csi_data.get("amplitudes", []))
+    }
+    
+    try:
+        loop = asyncio.get_event_loop()
+        response = await loop.run_in_executor(
+            None,
+            lambda: requests.post(endpoint, json=payload, timeout=5)
+        )
+        
+        if response.status_code == 200:
+            return True
+        else:
+            print(f"[CSI Server] Error response: {response.status_code}")
+            return False
+            
+    except requests.exceptions.RequestException as e:
+        print(f"[CSI Server] Connection error: {e}")
+        return False
+
+
+async def handle_camera(
     ws: websockets.WebSocketServerProtocol,
     counter: PeopleCounter,
     server_url: str,
@@ -206,7 +310,7 @@ async def handle_client(
     """Handle incoming WebSocket connection from ESP32 camera."""
     global latest_count
     
-    clients.add(ws)
+    camera_clients.add(ws)
     peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}" if ws.remote_address else "ESP32"
     print(f"[Server] {peer} connected")
     
@@ -227,61 +331,126 @@ async def handle_client(
             if stop_event.is_set():
                 break
             
-            if isinstance(msg, (bytes, bytearray)):
-                # Decode JPEG frame
-                array = np.frombuffer(msg, np.uint8)
-                frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
-                
-                if frame is None:
-                    print("[Server] Dropped invalid frame")
-                    continue
-                
-                frame_count += 1
-                
-                # Run inference
-                result = counter.count(frame)
-                latest_count = {
-                    "people_count": result["people_count"],
-                    "detections": result["detections"],
-                    "timestamp": result["timestamp"]
-                }
-                
-                # Display if enabled
-                if display:
-                    # Add count overlay
-                    annotated = result["annotated_image"].copy()
-                    cv2.putText(
-                        annotated,
-                        f"People: {result['people_count']}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        1,
-                        (0, 255, 0),
-                        2
-                    )
-                    submit_frame(annotated)
-                
-                # Send to server at interval
-                current_time = time.time()
-                if current_time - last_send_time >= send_interval:
-                    success = await send_to_server(server_url, result)
-                    if success:
-                        print(f"[Server] Sent count: {result['people_count']} people (frame {frame_count})")
-                    last_send_time = current_time
+            try:
+                if isinstance(msg, (bytes, bytearray)):
+                    # Decode JPEG frame
+                    array = np.frombuffer(msg, np.uint8)
+                    frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
                     
-            else:
-                # Handle JSON responses from ESP32
-                try:
-                    response = json.loads(msg)
-                    print(f"[ESP32 Response] {response}")
-                except json.JSONDecodeError:
-                    print(f"[ESP32 Text] {msg}")
+                    if frame is None:
+                        print("[Server] Dropped invalid frame")
+                        continue
+                    
+                    frame_count += 1
+                    
+                    # Run inference
+                    result = counter.count(frame)
+                    latest_count = {
+                        "people_count": result["people_count"],
+                        "detections": result["detections"],
+                        "timestamp": result["timestamp"]
+                    }
+                    
+                    # Display if enabled
+                    if display:
+                        # Add count overlay
+                        annotated = result["annotated_image"].copy()
+                        cv2.putText(
+                            annotated,
+                            f"People: {result['people_count']}",
+                            (10, 30),
+                            cv2.FONT_HERSHEY_SIMPLEX,
+                            1,
+                            (0, 255, 0),
+                            2
+                        )
+                        submit_frame(annotated)
+                    
+                    # Send to backend server (non-blocking, fire and forget)
+                    current_time = time.time()
+                    if current_time - last_send_time >= send_interval:
+                        # Fire and forget - don't await, let it run in background
+                        asyncio.create_task(send_to_server_background(server_url, result))
+                        print(f"[Server] Count: {result['people_count']} people (frame {frame_count})")
+                        last_send_time = current_time
+                    
+                    # Broadcast to all connected frontend viewers immediately
+                    try:
+                        frame_base64 = None
+                        if "annotated_image" in result and result["annotated_image"] is not None:
+                            success_encode, buffer = cv2.imencode('.jpg', result["annotated_image"], [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            if success_encode:
+                                frame_base64 = base64.b64encode(buffer).decode('utf-8')
+                        await broadcast_to_viewers(result, frame_base64)
+                    except Exception as e:
+                        print(f"[Broadcast] Error: {e}")
+                        
+                else:
+                    # Handle JSON data from ESP32 (CSI data or responses)
+                    try:
+                        data = json.loads(msg)
+                        
+                        # Check if this is CSI data
+                        if data.get("type") == "csi":
+                            # Forward CSI data to server
+                            await send_csi_to_server(server_url, data, latest_count.get("people_count", 0))
+                            print(f"[CSI] Received CSI data with {len(data.get('amplitudes', []))} subcarriers, RSSI: {data.get('rssi')}")
+                        else:
+                            print(f"[ESP32 Response] {data}")
+                            
+                    except json.JSONDecodeError:
+                        print(f"[ESP32 Text] {msg}")
+                        
+            except Exception as e:
+                # Log error but keep connection alive
+                print(f"[Server] Error processing frame {frame_count}: {e}")
+                continue
     
     except websockets.ConnectionClosed:
         print(f"[Server] {peer} disconnected")
+    except Exception as e:
+        print(f"[Server] Unexpected error: {e}")
     finally:
-        clients.discard(ws)
+        camera_clients.discard(ws)
         print(f"[Server] Total frames processed: {frame_count}")
+
+
+async def handle_viewer(ws: websockets.WebSocketServerProtocol) -> None:
+    """Handle incoming WebSocket connection from frontend viewer."""
+    viewer_clients.add(ws)
+    peer = f"{ws.remote_address[0]}:{ws.remote_address[1]}" if ws.remote_address else "Viewer"
+    print(f"[Viewer] {peer} connected (total viewers: {len(viewer_clients)})")
+    
+    # Send the latest cached frame if available
+    if latest_frame_base64 and latest_count.get("timestamp"):
+        try:
+            initial_message = json.dumps({
+                "type": "inference_result",
+                "people_count": latest_count["people_count"],
+                "detections": latest_count["detections"],
+                "timestamp": latest_count["timestamp"],
+                "frame_base64": latest_frame_base64
+            })
+            await ws.send(initial_message)
+        except websockets.ConnectionClosed:
+            pass
+    
+    try:
+        # Keep connection alive, viewer is receive-only
+        async for msg in ws:
+            # Viewers can send ping/pong or config messages if needed
+            if isinstance(msg, str):
+                try:
+                    data = json.loads(msg)
+                    if data.get("type") == "ping":
+                        await ws.send(json.dumps({"type": "pong"}))
+                except json.JSONDecodeError:
+                    pass
+    except websockets.ConnectionClosed:
+        print(f"[Viewer] {peer} disconnected")
+    finally:
+        viewer_clients.discard(ws)
+        print(f"[Viewer] Remaining viewers: {len(viewer_clients)}")
 
 
 async def wait_for_stop() -> None:
@@ -308,15 +477,33 @@ async def main(args: argparse.Namespace) -> None:
         display_thread = threading.Thread(target=display_loop, daemon=True)
         display_thread.start()
     
-    # Create handler with captured args
+    # Create handler that routes based on path
     async def handler(ws: websockets.WebSocketServerProtocol) -> None:
-        await handle_client(ws, counter, args.server, args.display, args.send_interval)
+        path = ws.path if hasattr(ws, 'path') else getattr(ws, 'request', None)
+        path_str = str(path) if path else ""
+        
+        if "/viewer" in path_str:
+            # Frontend viewer connection
+            await handle_viewer(ws)
+        else:
+            # ESP32 camera connection (default)
+            await handle_camera(ws, counter, args.server, args.display, args.send_interval)
     
-    # Start WebSocket server
-    async with websockets.serve(handler, "0.0.0.0", args.port, max_size=None):
+    # Start WebSocket server with disabled ping timeout
+    # This prevents disconnections during heavy YOLO inference
+    async with websockets.serve(
+        handler, 
+        "0.0.0.0", 
+        args.port, 
+        max_size=None,
+        ping_interval=30,    # Send ping every 30 seconds
+        ping_timeout=None    # Disable timeout - never close due to missed pong
+    ):
         print(f"[Server] WebSocket server running on ws://0.0.0.0:{args.port}")
+        print(f"[Server] Camera endpoint: ws://0.0.0.0:{args.port}/")
+        print(f"[Server] Viewer endpoint: ws://0.0.0.0:{args.port}/viewer")
         print(f"[Server] Sending results to {args.server}")
-        print("[Server] Waiting for ESP32 camera connection...")
+        print("[Server] Waiting for connections...")
         
         try:
             await wait_for_stop()

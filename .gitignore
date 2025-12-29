@@ -14,8 +14,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -75,7 +75,6 @@ docs/_build/
 
 # PyBuilder
 .pybuilder/
-target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
@@ -216,3 +215,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ESP-IDF / ESP32 Development
+edge_side/camera/build/
+edge_side/camera/managed_components/
+edge_side/camera/sdkconfig
+edge_side/camera/sdkconfig.old
+edge_side/camera/sdkconfig.final
+edge_side/camera/dependencies.lock
+edge_side/camera/.clangd
+edge_side/camera/.vscode/
+edge_side/camera/.devcontainer/

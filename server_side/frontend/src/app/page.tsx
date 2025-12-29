@@ -6,6 +6,7 @@ import BoundingBoxCanvas from '@/components/BoundingBoxCanvas';
 import StatsPanel from '@/components/StatsPanel';
 import Header from '@/components/Header';
 import LiveVideoStream from '@/components/LiveVideoStream';
+import CSIChart from '@/components/CSIChart';
 import { Detection, CountResult } from '@/types';
 
 type CountingMode = 'camera' | 'csi' | 'fusion';
@@ -13,7 +14,10 @@ type CountingMode = 'camera' | 'csi' | 'fusion';
 interface CSIStats {
   total_samples: number;
   buffer_size: number;
-  unique_people_counts: Record<string, number>;
+  motion_detected: boolean;
+  motion_level: number;
+  rssi_variance: number;
+  amplitude_variance: number;
   avg_rssi: number;
   avg_subcarriers: number;
 }
@@ -135,9 +139,9 @@ export default function Home() {
       <Header />
       
       <div className="container mx-auto px-4 py-6">
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-          {/* Main Content */}
-          <div className="lg:col-span-3 space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Left Column - Camera Feed & Upload */}
+          <div className="lg:col-span-2 space-y-6">
             {/* Mode Selector */}
             <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-4">
               <div className="flex items-center justify-between flex-wrap gap-4">
@@ -184,56 +188,18 @@ export default function Home() {
                   <span className="w-3 h-3 rounded-full bg-red-500 animate-pulse"></span>
                   <span>Live Camera Feed</span>
                 </h2>
+                {/* Active Count Badge */}
+                <div className={`px-4 py-2 rounded-xl text-white font-bold ${
+                  countingMode === 'camera' ? 'bg-blue-600' :
+                  countingMode === 'csi' ? 'bg-green-600' : 'bg-purple-600'
+                }`}>
+                  {getDisplayedCount()} people
+                </div>
               </div>
               
               <LiveVideoStream 
                 onCountUpdate={setCameraCount}
               />
-            </div>
-
-            {/* CSI Information Panel */}
-            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-6">
-              <h3 className="text-xl font-bold text-white mb-4 flex items-center space-x-2">
-                <span>📡</span>
-                <span>WiFi CSI Information</span>
-              </h3>
-              
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                <div className="bg-gray-700/50 rounded-lg p-3">
-                  <div className="text-gray-400 text-xs">Total Samples</div>
-                  <div className="text-white text-xl font-bold">{csiStats?.total_samples || 0}</div>
-                </div>
-                <div className="bg-gray-700/50 rounded-lg p-3">
-                  <div className="text-gray-400 text-xs">Buffer Size</div>
-                  <div className="text-white text-xl font-bold">{csiStats?.buffer_size || 0}</div>
-                </div>
-                <div className="bg-gray-700/50 rounded-lg p-3">
-                  <div className="text-gray-400 text-xs">Avg RSSI</div>
-                  <div className="text-white text-xl font-bold">{csiStats?.avg_rssi?.toFixed(1) || 'N/A'} dB</div>
-                </div>
-                <div className="bg-gray-700/50 rounded-lg p-3">
-                  <div className="text-gray-400 text-xs">Subcarriers</div>
-                  <div className="text-white text-xl font-bold">{csiStats?.avg_subcarriers?.toFixed(0) || 'N/A'}</div>
-                </div>
-              </div>
-
-              {/* Recent CSI Readings */}
-              {csiBuffer.length > 0 && (
-                <div className="mt-4">
-                  <div className="text-gray-400 text-sm mb-2">Recent CSI Readings</div>
-                  <div className="overflow-x-auto">
-                    <div className="flex space-x-2">
-                      {csiBuffer.slice(-5).map((reading, idx) => (
-                        <div key={idx} className="bg-gray-700/30 rounded-lg p-2 min-w-[120px]">
-                          <div className="text-green-400 text-lg font-bold">{reading.people_count} people</div>
-                          <div className="text-gray-500 text-xs">RSSI: {reading.rssi} dB</div>
-                          <div className="text-gray-500 text-xs">{reading.subcarrier_count} subcarriers</div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
             
             {/* Collapsible Upload Section */}
@@ -289,10 +255,19 @@ export default function Home() {
             </div>
           </div>
           
-          {/* Side Panel */}
+          {/* Right Column - CSI Motion Detection & Stats */}
           <div className="lg:col-span-1 space-y-6">
-            {/* Active Count Card */}
-            <div className={`rounded-2xl shadow-xl p-6 text-white ${
+            {/* CSI Motion Detection Panel */}
+            <div className="bg-gray-800/50 backdrop-blur-sm rounded-2xl shadow-xl border border-gray-700/50 p-4">
+              <h3 className="text-lg font-bold text-white mb-3 flex items-center space-x-2">
+                <span>📡</span>
+                <span>WiFi CSI Motion Detection</span>
+              </h3>
+              <CSIChart />
+            </div>
+
+            {/* Count Summary Card */}
+            <div className={`rounded-2xl shadow-xl p-4 text-white ${
               countingMode === 'camera' ? 'bg-gradient-to-br from-blue-600 to-blue-800' :
               countingMode === 'csi' ? 'bg-gradient-to-br from-green-600 to-green-800' :
               'bg-gradient-to-br from-purple-600 to-purple-800'
@@ -302,8 +277,8 @@ export default function Home() {
                  countingMode === 'csi' ? '📡 CSI Count' :
                  '🔀 Fusion Count'}
               </div>
-              <div className="text-5xl font-bold">{getDisplayedCount()}</div>
-              <div className="text-xs opacity-60 mt-2">
+              <div className="text-4xl font-bold">{getDisplayedCount()}</div>
+              <div className="text-xs opacity-60 mt-1">
                 {countingMode === 'fusion' && fusionData
                   ? `${fusionData.camera_count} × ${fusionData.camera_weight} + ${fusionData.csi_count} × ${fusionData.csi_weight}`
                   : 'Real-time detection'}

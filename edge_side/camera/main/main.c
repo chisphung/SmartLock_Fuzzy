@@ -18,25 +18,31 @@
 #include <stdio.h>
 #include <string.h>
 
-#define WIFI_SSID "lmaoindex"
-#define WIFI_PASS "khongphaiwibu"
-#define SERVER_URI "ws://10.231.182.129:8080"
+#define WIFI_SSID "nhmc"
+#define WIFI_PASS "14112005"
+#define SERVER_URI "ws://192.168.137.224:8080"
 
 // CSI Configuration
-#define CSI_ENABLED 1 // Set to 1 to enable CSI data sending, 0 to disable
+#define CSI_ENABLED 1            // Set to 1 to enable CSI data sending, 0 to disable
 #define CSI_SEND_INTERVAL_MS 500 // Send CSI data every 500ms
 #define CSI_BUFFER_SIZE 128      // Number of subcarriers
 
 // WebSocket Configuration
-#define WS_SEND_TIMEOUT_MS 1000 // Timeout for WebSocket sends
-#define FRAME_INTERVAL_MS                                                      \
-  100 // ~10 FPS target (was 50ms/20FPS - reduced for stability)
-#define WS_RECONNECT_DELAY_MS 2000 // Wait before reconnecting
-#define MAX_SEND_FAILURES 3        // Consecutive failures before reconnection
+#define WS_SEND_TIMEOUT_MS 600 // Timeout for WebSocket sends
+#define FRAME_INTERVAL_MS \
+  100                             // ~10 FPS target (was 50ms/20FPS - reduced for stability)
+#define WS_RECONNECT_DELAY_MS 500 // Wait before reconnecting
+#define MAX_SEND_FAILURES 3       // Consecutive failures before reconnection
+// Cap reconnect backoff to avoid long stalls but prevent rapid reconnect loops
+#define WS_RECONNECT_BACKOFF_MAX_MS 10000
 
 static const char *TAG = "ESP32CAM";
 static esp_websocket_client_handle_t ws;
 static EventGroupHandle_t s_wifi_event_group;
+
+// Connection state (updated from WebSocket event handler)
+static volatile bool s_ws_connected = false;
+static volatile bool s_ws_started = false;
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -50,8 +56,10 @@ static volatile int write_buffer_index =
     0; // Which buffer the interrupt writes to (0 or 1)
 
 /* ---------------- CSI CALLBACK ---------------- */
-static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info) {
-  if (!info || !info->buf || info->len == 0) {
+static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info)
+{
+  if (!info || !info->buf || info->len == 0)
+  {
     return;
   }
 
@@ -65,7 +73,22 @@ static void wifi_csi_rx_cb(void *ctx, wifi_csi_info_t *info) {
   csi_rssi[write_idx] = info->rx_ctrl.rssi;
 }
 
-static void csi_init(void) {
+static void csi_init(void)
+{
+  // CSI requires both SoC support and the Wi-Fi CSI feature enabled in sdkconfig.
+  // If the feature is disabled, esp_wifi_set_csi_config() typically returns ESP_FAIL.
+#if !CONFIG_SOC_WIFI_CSI_SUPPORT
+  ESP_LOGW(TAG, "CSI not supported by this target (CONFIG_SOC_WIFI_CSI_SUPPORT=0)");
+  return;
+#endif
+
+#if !CONFIG_ESP_WIFI_CSI_ENABLED && !CONFIG_ESP32_WIFI_CSI_ENABLED
+  ESP_LOGE(TAG,
+           "CSI is disabled in sdkconfig. Enable it via menuconfig: "
+           "Component config -> Wi-Fi -> WiFi CSI (CONFIG_ESP_WIFI_CSI_ENABLED)");
+  return;
+#endif
+
   wifi_csi_config_t csi_config = {
       .lltf_en = true,            // Enable LLTF (Long Training Field)
       .htltf_en = true,           // Enable HTLTF (HT Long Training Field)
@@ -76,15 +99,34 @@ static void csi_init(void) {
       .shift = 0,                 // No shift
   };
 
-  ESP_ERROR_CHECK(esp_wifi_set_csi_config(&csi_config));
-  ESP_ERROR_CHECK(esp_wifi_set_csi_rx_cb(&wifi_csi_rx_cb, NULL));
-  ESP_ERROR_CHECK(esp_wifi_set_csi(true));
+  esp_err_t err = esp_wifi_set_csi_config(&csi_config);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(TAG, "esp_wifi_set_csi_config failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  err = esp_wifi_set_csi_rx_cb(&wifi_csi_rx_cb, NULL);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(TAG, "esp_wifi_set_csi_rx_cb failed: %s", esp_err_to_name(err));
+    return;
+  }
+
+  err = esp_wifi_set_csi(true);
+  if (err != ESP_OK)
+  {
+    ESP_LOGE(TAG, "esp_wifi_set_csi(true) failed: %s", esp_err_to_name(err));
+    return;
+  }
 
   ESP_LOGI(TAG, "CSI initialized and enabled");
 }
 
-static bool send_csi_data(void) {
-  if (!ws || !esp_websocket_client_is_connected(ws)) {
+static bool send_csi_data(void)
+{
+  if (!ws || !esp_websocket_client_is_connected(ws))
+  {
     return false;
   }
 
@@ -93,13 +135,15 @@ static bool send_csi_data(void) {
   write_buffer_index = 1 - write_buffer_index; // Toggle between 0 and 1
 
   // Now read from read_idx while interrupt writes to the other buffer
-  if (csi_data_len[read_idx] == 0) {
+  if (csi_data_len[read_idx] == 0)
+  {
     return false;
   }
 
   // Create JSON object for CSI data
   cJSON *csi_obj = cJSON_CreateObject();
-  if (!csi_obj) {
+  if (!csi_obj)
+  {
     return false;
   }
 
@@ -110,9 +154,11 @@ static bool send_csi_data(void) {
 
   // Create array for CSI amplitude data
   cJSON *amplitudes = cJSON_CreateArray();
-  if (amplitudes) {
+  if (amplitudes)
+  {
     // Calculate amplitude from I/Q pairs: amp = sqrt(I^2 + Q^2)
-    for (int i = 0; i < csi_data_len[read_idx] / 2; i++) {
+    for (int i = 0; i < csi_data_len[read_idx] / 2; i++)
+    {
       int8_t real = csi_data_buffer[read_idx][i * 2];
       int8_t imag = csi_data_buffer[read_idx][i * 2 + 1];
       float amplitude = sqrtf((float)(real * real + imag * imag));
@@ -124,7 +170,8 @@ static bool send_csi_data(void) {
   // Send JSON via WebSocket
   char *payload = cJSON_PrintUnformatted(csi_obj);
   bool success = false;
-  if (payload) {
+  if (payload)
+  {
     int sent = esp_websocket_client_send_text(
         ws, payload, strlen(payload), pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
     success = (sent >= 0);
@@ -137,26 +184,31 @@ static bool send_csi_data(void) {
 }
 
 /* ---------------- UTILITIES ---------------- */
-static bool send_ws_json(cJSON *obj) {
-  if (!obj) {
+static bool send_ws_json(cJSON *obj)
+{
+  if (!obj)
+  {
     ESP_LOGE(TAG, "Attempted to send null JSON object");
     return false;
   }
 
-  if (!ws || !esp_websocket_client_is_connected(ws)) {
+  if (!ws || !esp_websocket_client_is_connected(ws))
+  {
     ESP_LOGW(TAG, "WebSocket not connected; dropping JSON response");
     return false;
   }
 
   char *payload = cJSON_PrintUnformatted(obj);
-  if (!payload) {
+  if (!payload)
+  {
     ESP_LOGE(TAG, "Failed to encode JSON payload");
     return false;
   }
 
   int sent = esp_websocket_client_send_text(ws, payload, strlen(payload),
                                             pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
-  if (sent < 0) {
+  if (sent < 0)
+  {
     ESP_LOGE(TAG, "Failed to send JSON payload over WebSocket");
     free(payload);
     return false;
@@ -165,13 +217,16 @@ static bool send_ws_json(cJSON *obj) {
   return true;
 }
 
-static void send_error_response(const char *message) {
-  if (!message) {
+static void send_error_response(const char *message)
+{
+  if (!message)
+  {
     message = "Unknown JSON error";
   }
 
   cJSON *err = cJSON_CreateObject();
-  if (!err) {
+  if (!err)
+  {
     ESP_LOGE(TAG, "Failed to allocate JSON error response");
     return;
   }
@@ -184,35 +239,45 @@ static void send_error_response(const char *message) {
 
 /* ---------------- WIFI INIT ---------------- */
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
-                               int32_t event_id, void *event_data) {
-  if (!s_wifi_event_group) {
+                               int32_t event_id, void *event_data)
+{
+  if (!s_wifi_event_group)
+  {
     return;
   }
 
-  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+  if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START)
+  {
     ESP_LOGI(TAG, "Wi-Fi STA start; connecting...");
     esp_wifi_connect();
-  } else if (event_base == WIFI_EVENT &&
-             event_id == WIFI_EVENT_STA_DISCONNECTED) {
+  }
+  else if (event_base == WIFI_EVENT &&
+           event_id == WIFI_EVENT_STA_DISCONNECTED)
+  {
     ESP_LOGW(TAG, "Wi-Fi disconnected; retrying...");
     xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
     esp_wifi_connect();
-  } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+  }
+  else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP)
+  {
     ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
     ESP_LOGI(TAG, "Wi-Fi connected, IP: " IPSTR, IP2STR(&event->ip_info.ip));
     xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
   }
 }
 
-static esp_err_t wifi_init_sta(void) {
+static esp_err_t wifi_init_sta(void)
+{
   s_wifi_event_group = xEventGroupCreate();
-  if (!s_wifi_event_group) {
+  if (!s_wifi_event_group)
+  {
     ESP_LOGE(TAG, "Failed to create Wi-Fi event group");
     return ESP_ERR_NO_MEM;
   }
 
   esp_err_t err = esp_netif_init();
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_netif_init failed: %s", esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
@@ -220,17 +285,21 @@ static esp_err_t wifi_init_sta(void) {
   }
 
   err = esp_event_loop_create_default();
-  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
+  if (err != ESP_OK && err != ESP_ERR_INVALID_STATE)
+  {
     ESP_LOGE(TAG, "esp_event_loop_create_default failed: %s",
              esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
     return err;
-  } else if (err == ESP_ERR_INVALID_STATE) {
+  }
+  else if (err == ESP_ERR_INVALID_STATE)
+  {
     ESP_LOGW(TAG, "Event loop already created; continuing");
   }
 
-  if (!esp_netif_create_default_wifi_sta()) {
+  if (!esp_netif_create_default_wifi_sta())
+  {
     ESP_LOGE(TAG, "Failed to create default Wi-Fi STA");
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
@@ -239,14 +308,16 @@ static esp_err_t wifi_init_sta(void) {
 
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
   err = esp_wifi_init(&cfg);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_wifi_init failed: %s", esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
     return err;
   }
   err = esp_wifi_set_mode(WIFI_MODE_STA);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_wifi_set_mode failed: %s", esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
@@ -263,7 +334,8 @@ static esp_err_t wifi_init_sta(void) {
           },
   };
   err = esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_wifi_set_config failed: %s", esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
     s_wifi_event_group = NULL;
@@ -273,7 +345,8 @@ static esp_err_t wifi_init_sta(void) {
   bool ip_handler_registered = false;
   err = esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler, NULL);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "Failed to register Wi-Fi event handler: %s",
              esp_err_to_name(err));
     vEventGroupDelete(s_wifi_event_group);
@@ -283,10 +356,12 @@ static esp_err_t wifi_init_sta(void) {
   wifi_handler_registered = true;
   err = esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                    &wifi_event_handler, NULL);
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "Failed to register IP event handler: %s",
              esp_err_to_name(err));
-    if (wifi_handler_registered) {
+    if (wifi_handler_registered)
+    {
       esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler);
     }
@@ -296,13 +371,16 @@ static esp_err_t wifi_init_sta(void) {
   }
   ip_handler_registered = true;
   err = esp_wifi_start();
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
-    if (wifi_handler_registered) {
+    if (wifi_handler_registered)
+    {
       esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler);
     }
-    if (ip_handler_registered) {
+    if (ip_handler_registered)
+    {
       esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                    &wifi_event_handler);
     }
@@ -313,13 +391,16 @@ static esp_err_t wifi_init_sta(void) {
   ESP_LOGI(TAG, "Connecting to Wi-Fi %s", WIFI_SSID);
 
   err = esp_wifi_connect();
-  if (err != ESP_OK) {
+  if (err != ESP_OK)
+  {
     ESP_LOGE(TAG, "esp_wifi_connect failed: %s", esp_err_to_name(err));
-    if (wifi_handler_registered) {
+    if (wifi_handler_registered)
+    {
       esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler);
     }
-    if (ip_handler_registered) {
+    if (ip_handler_registered)
+    {
       esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                    &wifi_event_handler);
     }
@@ -332,13 +413,16 @@ static esp_err_t wifi_init_sta(void) {
       xEventGroupWaitBits(s_wifi_event_group, WIFI_CONNECTED_BIT, pdFALSE,
                           pdFALSE, pdMS_TO_TICKS(10000));
 
-  if ((bits & WIFI_CONNECTED_BIT) == 0) {
+  if ((bits & WIFI_CONNECTED_BIT) == 0)
+  {
     ESP_LOGE(TAG, "Wi-Fi connection timeout");
-    if (wifi_handler_registered) {
+    if (wifi_handler_registered)
+    {
       esp_event_handler_unregister(WIFI_EVENT, ESP_EVENT_ANY_ID,
                                    &wifi_event_handler);
     }
-    if (ip_handler_registered) {
+    if (ip_handler_registered)
+    {
       esp_event_handler_unregister(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                    &wifi_event_handler);
     }
@@ -352,7 +436,8 @@ static esp_err_t wifi_init_sta(void) {
 }
 
 /* ---------------- CAMERA INIT ---------------- */
-static void camera_init(void) {
+static void camera_init(void)
+{
   camera_config_t config = {
       .pin_pwdn = CAM_PIN_PWDN,
       .pin_reset = CAM_PIN_RESET,
@@ -375,7 +460,7 @@ static void camera_init(void) {
       .ledc_channel = LEDC_CHANNEL_0,
       .pixel_format = PIXFORMAT_JPEG,
       .frame_size = FRAMESIZE_QVGA,
-      .jpeg_quality = 20, // Higher = more compression = faster transfer (was 8)
+      .jpeg_quality = 15, // Higher = more compression = faster transfer (was 8)
       .fb_count = 2};     // Reduced buffer count for lower memory usage
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK)
@@ -386,18 +471,25 @@ static void camera_init(void) {
 
 /* ---------------- WEBSOCKET EVENTS ---------------- */
 static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
-                        void *data) {
+                        void *data)
+{
   esp_websocket_event_data_t *event = (esp_websocket_event_data_t *)data;
 
-  switch (eid) {
+  switch (eid)
+  {
   case WEBSOCKET_EVENT_CONNECTED:
     ESP_LOGI(TAG, "WebSocket connected");
+    s_ws_connected = true;
+    s_ws_started = true;
     break;
   case WEBSOCKET_EVENT_DISCONNECTED:
     ESP_LOGW(TAG, "WebSocket disconnected");
+    s_ws_connected = false;
     break;
   case WEBSOCKET_EVENT_ERROR:
-    if (event) {
+    s_ws_connected = false;
+    if (event)
+    {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
       ESP_LOGE(TAG, "WebSocket transport error, type=%d, esp_tls=0x%x",
                event->error_handle.error_type,
@@ -409,26 +501,32 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
                event->error_handle.esp_tls_last_esp_err,
                event->error_handle.last_errno);
 #endif
-    } else {
+    }
+    else
+    {
       ESP_LOGE(TAG, "WebSocket transport error with no details");
     }
     break;
   case WEBSOCKET_EVENT_DATA:
-    if (!event) {
+    if (!event)
+    {
       ESP_LOGW(TAG, "WebSocket data event with null payload");
       return;
     }
-    if (event->op_code == WS_TRANSPORT_OPCODES_BINARY) {
+    if (event->op_code == WS_TRANSPORT_OPCODES_BINARY)
+    {
       ESP_LOGD(TAG, "Binary data received (%d bytes) ignored", event->data_len);
       return;
     }
     char *json = strndup(event->data_ptr, event->data_len);
-    if (!json) {
+    if (!json)
+    {
       ESP_LOGE(TAG, "Failed to allocate buffer for JSON payload");
       return;
     }
     cJSON *root = cJSON_Parse(json);
-    if (!root) {
+    if (!root)
+    {
       ESP_LOGW(TAG, "Invalid JSON payload from WebSocket");
       send_error_response("Invalid JSON payload");
       free(json);
@@ -436,7 +534,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
     }
 
     sensor_t *s = esp_camera_sensor_get();
-    if (!s) {
+    if (!s)
+    {
       ESP_LOGE(TAG, "Camera sensor unavailable");
       send_error_response("Camera sensor unavailable");
       cJSON_Delete(root);
@@ -448,8 +547,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
 
     const cJSON *brightness =
         cJSON_GetObjectItemCaseSensitive(root, "brightness");
-    if (brightness) {
-      if (!cJSON_IsNumber(brightness)) {
+    if (brightness)
+    {
+      if (!cJSON_IsNumber(brightness))
+      {
         ESP_LOGW(TAG, "Invalid type for brightness field");
         send_error_response("Field 'brightness' must be numeric");
         cJSON_Delete(root);
@@ -462,8 +563,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
     }
 
     const cJSON *contrast = cJSON_GetObjectItemCaseSensitive(root, "contrast");
-    if (contrast) {
-      if (!cJSON_IsNumber(contrast)) {
+    if (contrast)
+    {
+      if (!cJSON_IsNumber(contrast))
+      {
         ESP_LOGW(TAG, "Invalid type for contrast field");
         send_error_response("Field 'contrast' must be numeric");
         cJSON_Delete(root);
@@ -477,8 +580,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
 
     const cJSON *saturation =
         cJSON_GetObjectItemCaseSensitive(root, "saturation");
-    if (saturation) {
-      if (!cJSON_IsNumber(saturation)) {
+    if (saturation)
+    {
+      if (!cJSON_IsNumber(saturation))
+      {
         ESP_LOGW(TAG, "Invalid type for saturation field");
         send_error_response("Field 'saturation' must be numeric");
         cJSON_Delete(root);
@@ -491,8 +596,10 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
     }
 
     const cJSON *quality = cJSON_GetObjectItemCaseSensitive(root, "quality");
-    if (quality) {
-      if (!cJSON_IsNumber(quality)) {
+    if (quality)
+    {
+      if (!cJSON_IsNumber(quality))
+      {
         ESP_LOGW(TAG, "Invalid type for quality field");
         send_error_response("Field 'quality' must be numeric");
         cJSON_Delete(root);
@@ -504,7 +611,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
       updated = true;
     }
 
-    if (!updated) {
+    if (!updated)
+    {
       // Gracefully ignore JSON without recognized camera fields (e.g., acks,
       // pings)
       ESP_LOGD(TAG, "Received JSON without camera config fields, ignoring");
@@ -514,7 +622,8 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
     }
 
     cJSON *resp = cJSON_CreateObject();
-    if (!resp) {
+    if (!resp)
+    {
       ESP_LOGE(TAG, "Failed to allocate JSON response");
       cJSON_Delete(root);
       free(json);
@@ -522,9 +631,12 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
     }
     cJSON_AddStringToObject(resp, "status", "ok");
     cJSON_AddStringToObject(resp, "message", "Camera parameters updated");
-    if (send_ws_json(resp)) {
+    if (send_ws_json(resp))
+    {
       ESP_LOGI(TAG, "Camera parameters updated and acknowledged");
-    } else {
+    }
+    else
+    {
       ESP_LOGW(TAG, "Failed to deliver camera update acknowledgment");
     }
     cJSON_Delete(resp);
@@ -538,10 +650,12 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
 }
 
 /* ---------------- MAIN ---------------- */
-void app_main(void) {
+void app_main(void)
+{
   esp_err_t nvs_ret = nvs_flash_init();
   if (nvs_ret == ESP_ERR_NVS_NO_FREE_PAGES ||
-      nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      nvs_ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
+  {
     ESP_ERROR_CHECK(nvs_flash_erase());
     nvs_ret = nvs_flash_init();
   }
@@ -555,64 +669,112 @@ void app_main(void) {
 
   camera_init();
 
-  esp_websocket_client_config_t ws_cfg = {.uri = SERVER_URI};
+  esp_websocket_client_config_t ws_cfg = {
+      .uri = SERVER_URI,
+      // Larger buffer reduces payload fragmentation and helps stability.
+      .buffer_size = 8192,
+      // Slightly larger task stack to handle the bigger buffer safely.
+      .task_stack = 6144,
+      // Keep the TCP/WebSocket session alive and detect dead peers.
+      .keep_alive_enable = true,
+      .keep_alive_idle = 5,
+      .keep_alive_interval = 5,
+      .keep_alive_count = 3,
+      .ping_interval_sec = 10,
+      .pingpong_timeout_sec = 30,
+      // Allow built-in auto-reconnect, but we also guard reconnects in main loop.
+      .disable_auto_reconnect = false,
+      .enable_close_reconnect = true,
+      .reconnect_timeout_ms = WS_RECONNECT_DELAY_MS,
+      .network_timeout_ms = 10000,
+  };
   ws = esp_websocket_client_init(&ws_cfg);
-  if (!ws) {
+  if (!ws)
+  {
     ESP_LOGE(TAG, "Failed to create WebSocket client");
     return;
   }
   esp_websocket_register_events(ws, WEBSOCKET_EVENT_ANY, on_ws_event, NULL);
   esp_err_t ws_start_err = esp_websocket_client_start(ws);
-  if (ws_start_err != ESP_OK) {
+  if (ws_start_err != ESP_OK)
+  {
     ESP_LOGE(TAG, "WebSocket start failed: %s", esp_err_to_name(ws_start_err));
     return;
   }
+  s_ws_started = true;
   ESP_LOGI(TAG, "WebSocket client started: %s", SERVER_URI);
 
   uint32_t last_csi_send = 0;
   int consecutive_failures = 0;
+  uint32_t last_ws_disconnected_log = 0;
 
-  while (true) {
-    if (!esp_websocket_client_is_connected(ws)) {
-      // Longer wait on disconnect to avoid rapid reconnect cycles
-      ESP_LOGW(TAG, "WebSocket disconnected, waiting %dms before retry...",
-               WS_RECONNECT_DELAY_MS);
+  while (true)
+  {
+    // If Wi-Fi is down, don't churn reconnect attempts.
+    if (!s_wifi_event_group ||
+        (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) == 0)
+    {
+      s_ws_connected = false;
+      consecutive_failures = 0;
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    // If disconnected, rely on esp_websocket_client auto-reconnect.
+    // Avoid calling stop/start here; it can race with the internal reconnect logic.
+    if (!ws || !esp_websocket_client_is_connected(ws))
+    {
+      uint32_t now_ms = esp_log_timestamp();
+      if (now_ms - last_ws_disconnected_log >= 2000)
+      {
+        last_ws_disconnected_log = now_ms;
+        ESP_LOGW(TAG, "WebSocket not connected; waiting for auto-reconnect...");
+      }
+      consecutive_failures = 0;
       vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
-      consecutive_failures = 0; // Reset on reconnect
       continue;
     }
 
     // Send camera frame with timeout (non-blocking if network is slow)
     camera_fb_t *fb = esp_camera_fb_get();
-    if (fb) {
+    if (fb)
+    {
       int sent =
           esp_websocket_client_send_bin(ws, (const char *)fb->buf, fb->len,
                                         pdMS_TO_TICKS(WS_SEND_TIMEOUT_MS));
-      if (sent < 0) {
+      if (sent < 0)
+      {
         consecutive_failures++;
         ESP_LOGW(TAG, "Frame send failed (%d/%d)", consecutive_failures,
                  MAX_SEND_FAILURES);
 
-        if (consecutive_failures >= MAX_SEND_FAILURES) {
+        if (consecutive_failures >= MAX_SEND_FAILURES)
+        {
           ESP_LOGE(TAG, "Too many failures, forcing reconnection");
-          esp_websocket_client_close(ws, pdMS_TO_TICKS(500));
-          vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
-          esp_websocket_client_start(ws);
+          // Request close; auto-reconnect will kick in.
+          s_ws_connected = false;
+          (void)esp_websocket_client_close(ws, pdMS_TO_TICKS(500));
           consecutive_failures = 0;
         }
-      } else {
+      }
+      else
+      {
         consecutive_failures = 0; // Reset on success
       }
       esp_camera_fb_return(fb);
-    } else {
+    }
+    else
+    {
       ESP_LOGW(TAG, "Failed to get camera frame buffer");
     }
 
 #if CSI_ENABLED
     // Send CSI data periodically
     uint32_t now = esp_log_timestamp();
-    if (now - last_csi_send >= CSI_SEND_INTERVAL_MS) {
-      if (send_csi_data()) {
+    if (now - last_csi_send >= CSI_SEND_INTERVAL_MS)
+    {
+      if (send_csi_data())
+      {
         ESP_LOGD(TAG, "CSI data sent");
       }
       last_csi_send = now;

@@ -30,13 +30,19 @@
 // WebSocket Configuration
 #define WS_SEND_TIMEOUT_MS 600 // Timeout for WebSocket sends
 #define FRAME_INTERVAL_MS \
-  100                              // ~10 FPS target (was 50ms/20FPS - reduced for stability)
-#define WS_RECONNECT_DELAY_MS 2000 // Wait before reconnecting
-#define MAX_SEND_FAILURES 3        // Consecutive failures before reconnection
+  100                             // ~10 FPS target (was 50ms/20FPS - reduced for stability)
+#define WS_RECONNECT_DELAY_MS 500 // Wait before reconnecting
+#define MAX_SEND_FAILURES 3       // Consecutive failures before reconnection
+// Cap reconnect backoff to avoid long stalls but prevent rapid reconnect loops
+#define WS_RECONNECT_BACKOFF_MAX_MS 10000
 
 static const char *TAG = "ESP32CAM";
 static esp_websocket_client_handle_t ws;
 static EventGroupHandle_t s_wifi_event_group;
+
+// Connection state (updated from WebSocket event handler)
+static volatile bool s_ws_connected = false;
+static volatile bool s_ws_started = false;
 
 #define WIFI_CONNECTED_BIT BIT0
 
@@ -473,11 +479,15 @@ static void on_ws_event(void *arg, esp_event_base_t base, int32_t eid,
   {
   case WEBSOCKET_EVENT_CONNECTED:
     ESP_LOGI(TAG, "WebSocket connected");
+    s_ws_connected = true;
+    s_ws_started = true;
     break;
   case WEBSOCKET_EVENT_DISCONNECTED:
     ESP_LOGW(TAG, "WebSocket disconnected");
+    s_ws_connected = false;
     break;
   case WEBSOCKET_EVENT_ERROR:
+    s_ws_connected = false;
     if (event)
     {
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 2, 0)
@@ -665,6 +675,18 @@ void app_main(void)
       .buffer_size = 8192,
       // Slightly larger task stack to handle the bigger buffer safely.
       .task_stack = 6144,
+      // Keep the TCP/WebSocket session alive and detect dead peers.
+      .keep_alive_enable = true,
+      .keep_alive_idle = 5,
+      .keep_alive_interval = 5,
+      .keep_alive_count = 3,
+      .ping_interval_sec = 10,
+      .pingpong_timeout_sec = 30,
+      // Allow built-in auto-reconnect, but we also guard reconnects in main loop.
+      .disable_auto_reconnect = false,
+      .enable_close_reconnect = true,
+      .reconnect_timeout_ms = WS_RECONNECT_DELAY_MS,
+      .network_timeout_ms = 10000,
   };
   ws = esp_websocket_client_init(&ws_cfg);
   if (!ws)
@@ -679,20 +701,37 @@ void app_main(void)
     ESP_LOGE(TAG, "WebSocket start failed: %s", esp_err_to_name(ws_start_err));
     return;
   }
+  s_ws_started = true;
   ESP_LOGI(TAG, "WebSocket client started: %s", SERVER_URI);
 
   uint32_t last_csi_send = 0;
   int consecutive_failures = 0;
+  uint32_t last_ws_disconnected_log = 0;
 
   while (true)
   {
-    if (!esp_websocket_client_is_connected(ws))
+    // If Wi-Fi is down, don't churn reconnect attempts.
+    if (!s_wifi_event_group ||
+        (xEventGroupGetBits(s_wifi_event_group) & WIFI_CONNECTED_BIT) == 0)
     {
-      // Longer wait on disconnect to avoid rapid reconnect cycles
-      ESP_LOGW(TAG, "WebSocket disconnected, waiting %dms before retry...",
-               WS_RECONNECT_DELAY_MS);
+      s_ws_connected = false;
+      consecutive_failures = 0;
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+
+    // If disconnected, rely on esp_websocket_client auto-reconnect.
+    // Avoid calling stop/start here; it can race with the internal reconnect logic.
+    if (!ws || !esp_websocket_client_is_connected(ws))
+    {
+      uint32_t now_ms = esp_log_timestamp();
+      if (now_ms - last_ws_disconnected_log >= 2000)
+      {
+        last_ws_disconnected_log = now_ms;
+        ESP_LOGW(TAG, "WebSocket not connected; waiting for auto-reconnect...");
+      }
+      consecutive_failures = 0;
       vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
-      consecutive_failures = 0; // Reset on reconnect
       continue;
     }
 
@@ -712,9 +751,9 @@ void app_main(void)
         if (consecutive_failures >= MAX_SEND_FAILURES)
         {
           ESP_LOGE(TAG, "Too many failures, forcing reconnection");
-          esp_websocket_client_close(ws, pdMS_TO_TICKS(500));
-          vTaskDelay(pdMS_TO_TICKS(WS_RECONNECT_DELAY_MS));
-          esp_websocket_client_start(ws);
+          // Request close; auto-reconnect will kick in.
+          s_ws_connected = false;
+          (void)esp_websocket_client_close(ws, pdMS_TO_TICKS(500));
           consecutive_failures = 0;
         }
       }

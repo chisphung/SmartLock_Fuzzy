@@ -59,7 +59,7 @@ steps:
 
 # Substitution variables
 substitutions:
-  _REGION: "asia-southeast1"
+  _REGION: "asia-east1"
   _MEMORY: "4Gi"
   _CPU: "2"
 

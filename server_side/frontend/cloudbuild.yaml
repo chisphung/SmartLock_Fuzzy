@@ -60,7 +60,7 @@ steps:
 # Substitution variables (override _API_URL with your backend URL)
 substitutions:
   _REGION: "asia-east1"
-  _API_URL: "https://people-counting-api-zk43zjlhoq-uc.a.run.app"
+  _API_URL: "https://people-counting-api-304130190385.asia-east1.run.app"
 
 # Build options
 options:

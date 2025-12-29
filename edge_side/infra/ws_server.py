@@ -43,7 +43,7 @@ from ultralytics import YOLO
 
 # Configuration
 DEFAULT_WS_PORT = 8080
-DEFAULT_SERVER_URL = "https://people-counting-api-304130190385.us-central1.run.app"
+DEFAULT_SERVER_URL = "https://people-counting-api-304130190385.asia-east1.run.app"
 DEFAULT_WEIGHTS = os.path.join(os.path.dirname(__file__), "weights", "yolo11n_ncnn_model_coco")
 
 # Global state

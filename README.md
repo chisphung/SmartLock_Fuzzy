@@ -1,12 +1,13 @@
 # CE224.Q11 - People Counting System
 
-A real-time people counting application powered by YOLOv11 and WiFi CSI (Channel State Information), featuring ESP32-CAM integration, edge computing with WebSocket streaming, FastAPI backend, and Next.js frontend with live bounding box visualization.
+A real-time people counting application powered by YOLOv11 and WiFi CSI (Channel State Information), featuring ESP32-CAM integration, edge computing with WebSocket streaming, FastAPI backend, and Next.js frontend with live bounding box visualization and CSI motion detection.
 
 ![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green?logo=fastapi)
 ![Next.js](https://img.shields.io/badge/Next.js-14-black?logo=next.js)
 ![YOLOv11](https://img.shields.io/badge/YOLO-v11-purple)
 ![ESP32](https://img.shields.io/badge/ESP32-CAM-orange?logo=espressif)
+![Google Cloud](https://img.shields.io/badge/Google_Cloud-Run-blue?logo=google-cloud)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ## 📋 Table of Contents
@@ -16,56 +17,76 @@ A real-time people counting application powered by YOLOv11 and WiFi CSI (Channel
 - [Project Structure](#-project-structure)
 - [Installation](#-installation)
 - [Usage](#-usage)
-- [CSI People Counting](#-csi-people-counting)
+- [CSI Motion Detection](#-csi-motion-detection)
 - [API Documentation](#-api-documentation)
+- [Cloud Deployment](#-cloud-deployment)
 - [Dataset](#-dataset)
 - [Contributing](#-contributing)
 - [License](#-license)
 
 ## ✨ Features
 
-- **Real-time People Detection**: Utilizes YOLOv11 for accurate people counting
-- **WiFi CSI Sensing**: Non-visual human detection using WiFi signal variations
-- **Multi-Modal Fusion**: Combines camera and CSI for improved accuracy
-- **ESP32-CAM Integration**: Wireless camera streaming via WebSocket
-- **Edge Computing**: On-device YOLO inference for low-latency processing
-- **Live Video Streaming**: Real-time annotated video feed with bounding boxes
-- **ML Model Training**: Train custom CSI models for people counting
-- **Web Interface**: Modern, responsive UI built with Next.js and Tailwind CSS
-- **RESTful API**: FastAPI backend with automatic OpenAPI documentation
-- **NCNN Model Support**: Optimized model for CPU inference on edge devices
+### Camera-based Detection
+
+- **Real-time People Detection**: YOLOv11 nano model optimized for edge devices
+- **NCNN Backend**: CPU-optimized inference using NCNN library
+- **Live Bounding Boxes**: Real-time annotated video with detection overlays
+- **Edge Computing**: On-device inference for low-latency processing
+
+### WiFi CSI Sensing
+
+- **Motion Detection**: Non-visual human detection using WiFi signal variance
+- **Real-time Monitoring**: Live RSSI and amplitude visualization with charts
+- **Variance-based Detection**: Statistical motion detection without ML training
+- **Calibration API**: Adjustable thresholds for different environments
+
+### Streaming & Communication
+
+- **Direct WebSocket Streaming**: Frontend receives frames directly from edge device
+- **Fallback HTTP Polling**: Automatic fallback when WebSocket unavailable
+- **ESP32-CAM Integration**: Wireless camera + CSI streaming via WebSocket
+
+### Web Interface
+
+- **Live Video Stream**: Real-time annotated video with bounding boxes
+- **CSI Motion Chart**: Interactive charts showing RSSI, amplitude, and motion level
+- **Motion Status Banner**: Visual indicators for motion detection status
+- **Responsive Design**: Modern UI built with Next.js and Tailwind CSS
 
 ## 🏗 Architecture
 
 ```
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
 │                 │     │                 │     │                 │     │                 │
-│   ESP32-CAM     │────▶│  Edge Device    │────▶│  FastAPI Server │────▶│  Next.js GUI    │
-│  Camera + CSI   │     │  (YOLO Infer)   │     │  (Port 8000)    │     │  (Port 3000)    │
-│   Port 8080     │     │  ws_server.py   │     │                 │     │                 │
-│                 │     │                 │     │                 │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────────┘
-                                │                       │
-                                │                       ▼
-                                │               ┌─────────────────┐
-                                └──────────────▶│  CSI Training   │
-                                  CSI Data      │  (ML Models)    │
-                                                └─────────────────┘
+│   ESP32-CAM     │────▶│  Edge Device    │═══════════════════════════▶│  Next.js GUI    │
+│  Camera + CSI   │     │  (YOLO Infer)   │     │                 │     │  (Port 3000)    │
+│   WebSocket     │     │  ws_server.py   │     │                 │     │                 │
+│                 │     │   Port 8080     │     │                 │     │                 │
+└─────────────────┘     └────────┬────────┘     └─────────────────┘     └───────┬─────────┘
+                                 │                                              │
+                                 │ REST API                                     │ Poll
+                                 ▼                                              ▼
+                        ┌─────────────────┐                            ┌─────────────────┐
+                        │  FastAPI Server │◀──────────────────────────▶│  CSI Motion     │
+                        │  (Port 8000)    │         REST API           │  Detection API  │
+                        │  Google Cloud   │                            │                 │
+                        └─────────────────┘                            └─────────────────┘
 ```
 
 ### Data Flow
 
-1. **ESP32-CAM** captures JPEG frames + CSI data, sends via WebSocket
-2. **Edge Device** (`ws_server.py`) receives frames, runs YOLOv11, forwards CSI
-3. **Server** stores CSI data for training, serves results to frontend
-4. **Frontend** displays live video stream with real-time counting
+1. **ESP32-CAM** captures JPEG frames (~10 FPS) + CSI data (every 500ms), sends via WebSocket
+2. **Edge Device** (`ws_server.py`) receives frames, runs YOLOv11 inference
+3. **Direct Streaming**: Edge broadcasts results directly to frontend via WebSocket (`/viewer` endpoint)
+4. **Backend Sync**: Edge sends results to backend for storage and CSI motion analysis
+5. **Frontend** displays live video, bounding boxes, people count, and CSI motion status
 
 ## 📁 Project Structure
 
 ```
 CE224.Q11_People_Counting/
 ├── edge_side/
-│   ├── camera/                    # ESP32-CAM Firmware
+│   ├── camera/                    # ESP32-CAM Firmware (ESP-IDF 5.x)
 │   │   ├── main/
 │   │   │   ├── main.c            # Camera + CSI capture & WebSocket
 │   │   │   └── camera_pins.h     # Hardware pin definitions
@@ -74,34 +95,37 @@ CE224.Q11_People_Counting/
 │   │
 │   └── infra/                     # Edge ML Infrastructure
 │       ├── ws_server.py          # WebSocket server + YOLO inference
-│       ├── train_csi_model.py    # CSI ML model training script
-│       ├── main.py               # CLI inference script
+│       ├── test_cam.py           # Camera client for testing
 │       ├── weights/              # Model weights
-│       │   └── yolov11n_ncnn_model/
-│       ├── csi_data/             # CSI training data
-│       │   └── training_data.jsonl
-│       └── tmp/                  # Temporary output
+│       │   └── yolo11n_ncnn_model_coco/
+│       └── csi_data/             # CSI training data
 │
 ├── server_side/
 │   ├── backend/                   # FastAPI Backend
 │   │   ├── main.py               # Application entry
 │   │   ├── routers/
 │   │   │   ├── count_people.py   # Camera counting endpoints
-│   │   │   └── csi.py            # CSI data endpoints
-│   │   └── schema/               # Pydantic models
+│   │   │   └── csi.py            # CSI motion detection endpoints
+│   │   ├── Dockerfile            # Container config
+│   │   └── cloudbuild.yaml       # Cloud Build config
 │   │
 │   └── frontend/                  # Next.js Frontend
 │       ├── src/
-│       │   ├── app/
-│       │   │   └── page.tsx      # Main page with live stream
+│       │   ├── app/page.tsx      # Main page
 │       │   ├── components/
-│       │   │   ├── LiveVideoStream.tsx
-│       │   │   ├── BoundingBoxCanvas.tsx
-│       │   │   └── ...
+│       │   │   ├── LiveVideoStream.tsx   # WebSocket video stream
+│       │   │   ├── CSIChart.tsx          # Motion detection charts
+│       │   │   └── BoundingBoxCanvas.tsx # Detection overlays
 │       │   └── types/
-│       └── package.json
+│       ├── Dockerfile            # Container config
+│       └── cloudbuild.yaml       # Cloud Build config
 │
-└── requirements.txt               # Python dependencies
+├── training_process/              # Model Training
+│   ├── optimize_model.py         # NCNN export with INT8 quantization
+│   ├── train_csi_model.py        # CSI ML model training
+│   └── htn-object-counting.ipynb # Training notebook
+│
+└── requirements.txt              # Python dependencies
 ```
 
 ## 🚀 Installation
@@ -135,184 +159,181 @@ pip install -r requirements.txt
 ```bash
 cd server_side/frontend
 npm install
+
+# Create environment file
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+echo "NEXT_PUBLIC_WS_URL=ws://YOUR_EDGE_IP:8080/viewer" >> .env.local
 ```
 
 ### 4. Set Up ESP32-CAM
 
 #### 4.1 Configure Wi-Fi and Server
 
-Edit `edge_side/camera/main/main.c` and update these defines:
+Edit `edge_side/camera/main/main.c`:
 
 ```c
-#define WIFI_SSID "your_wifi_name"      // Your Wi-Fi network name
-#define WIFI_PASS "your_wifi_password"  // Your Wi-Fi password
-#define SERVER_URI "ws://192.168.x.x:8080"  // WebSocket server IP
-```
-
-> **Important**: The `SERVER_URI` must point to the IP address of the machine running `ws_server.py` on the **same network** as the ESP32-CAM.
-
-To find your server IP:
-
-```bash
-# Linux/Mac
-ip addr | grep "inet " | grep -v 127.0.0.1
-# or
-hostname -I
+#define WIFI_SSID "your_wifi_name"
+#define WIFI_PASS "your_wifi_password"
+#define SERVER_URI "ws://192.168.x.x:8080"  // Edge server IP
 ```
 
 #### 4.2 Build and Flash
 
-**Option A: Using Docker (Recommended)**
-
 ```bash
 cd edge_side/camera
 
-# Build
+# Using Docker (Recommended)
 docker run --rm -v $PWD:/project -w /project espressif/idf:v5.3 idf.py build
-
-# Flash (connect ESP32-CAM via USB, hold BOOT button during connection)
 docker run --rm -v $PWD:/project -w /project \
   --device=/dev/ttyUSB0 --privileged \
-  espressif/idf:v5.3 idf.py -p /dev/ttyUSB0 flash
-
-# Monitor serial output
-docker run --rm -v $PWD:/project -w /project \
-  --device=/dev/ttyUSB0 --privileged -it \
-  espressif/idf:v5.3 idf.py -p /dev/ttyUSB0 monitor
+  espressif/idf:v5.3 idf.py -p /dev/ttyUSB0 flash monitor
 ```
-
-**Option B: Native ESP-IDF**
-
-```bash
-cd edge_side/camera
-idf.py build
-idf.py -p /dev/ttyUSB0 flash monitor
-```
-
-#### 4.3 Troubleshooting
-
-| Issue                                                 | Solution                                                             |
-| ----------------------------------------------------- | -------------------------------------------------------------------- |
-| `Failed to connect to ESP32: No serial data received` | Hold **BOOT** button while connecting, or during flash command       |
-| `Connection reset by peer` on WebSocket               | Ensure `ws_server.py` is running on the server before powering ESP32 |
-| ESP32 connects to wrong network                       | Verify `WIFI_SSID` and `WIFI_PASS` match exactly (case-sensitive)    |
-| WebSocket timeout                                     | Check firewall: `sudo ufw allow 8080/tcp`                            |
 
 ## 📖 Usage
 
-### Option 1: Full Pipeline (ESP32-CAM → Edge → Server → Frontend)
+### Option 1: Full Pipeline
 
 ```bash
-# Terminal 1: Start the backend server
+# Terminal 1: Backend server
 cd server_side/backend
 python main.py
 
-# Terminal 2: Start the edge WebSocket server
+# Terminal 2: Edge WebSocket server
 cd edge_side/infra
 python ws_server.py --display  # --display for local preview
 
-# Terminal 3: Start the frontend
+# Terminal 3: Frontend
 cd server_side/frontend
 npm run dev
 
 # Power on ESP32-CAM (connects automatically)
 ```
 
-Open `http://localhost:3000` for live video stream with people counting.
+Open `http://localhost:3000` for live video with people counting and CSI motion detection.
 
-### Option 2: CLI Inference
+### Option 2: Test with Webcam
 
 ```bash
 cd edge_side/infra
 
-# Process image
-python main.py --source path/to/image.jpg --out tmp/result.jpg
+# Run edge server
+python ws_server.py --port 8080
 
-# Use webcam
-python main.py --source 0 --out tmp/latest.jpg
+# In another terminal, run test camera
+python test_cam.py  # Uses webcam as input
 ```
 
-## 📡 CSI People Counting
+## 📡 CSI Motion Detection
 
-WiFi CSI (Channel State Information) enables non-visual human detection by analyzing WiFi signal variations caused by human presence.
+WiFi CSI (Channel State Information) enables non-visual motion detection by analyzing WiFi signal variations caused by human movement.
 
 ### How It Works
 
-1. **ESP32 collects CSI** data from WiFi packets
-2. **Edge server forwards** CSI + camera count to backend
-3. **Server stores** CSI data with camera-based labels
-4. **Train ML model** to predict people count from CSI alone
+The motion detection algorithm uses **variance-based statistical analysis**:
 
-### Collecting Training Data
+1. **Sliding Window**: Analyzes last N CSI samples (default: 10)
+2. **RSSI Variance**: Calculates variance of RSSI values over time
+3. **Amplitude Variance**: Calculates variance of mean CSI amplitudes
+4. **Threshold Comparison**: Motion detected if variance exceeds thresholds
+5. **Motion Level**: Weighted combination (40% RSSI + 60% amplitude)
 
-```bash
-# Start full pipeline (server + edge + ESP32)
-# CSI data auto-saves to: edge_side/infra/csi_data/training_data.jsonl
+### Motion Level Formula
 
-# Check collection stats
-curl http://localhost:8000/api/v1/csi/stats
+```
+M = 0.4 × min(100, σ²_RSSI/τ_RSSI × 50) + 0.6 × min(100, σ²_amp/τ_amp × 50)
 ```
 
-### Training a CSI Model
+Where:
+
+- `τ_RSSI = 5 dB` (default RSSI variance threshold)
+- `τ_amp = 50` (default amplitude variance threshold)
+
+### Calibration
 
 ```bash
-cd edge_side/infra
-
-# Random Forest (recommended)
-python train_csi_model.py \
-    --data csi_data/training_data.jsonl \
-    --model rf \
-    --output csi_model.pkl
-
-# Neural Network
-python train_csi_model.py --data csi_data/training_data.jsonl --model nn
-
-# Gradient Boosting
-python train_csi_model.py --data csi_data/training_data.jsonl --model gb
+# Adjust thresholds via API
+curl -X POST "http://localhost:8000/api/v1/csi/calibrate?rssi_threshold=3&amplitude_threshold=30&window_size=15"
 ```
 
-### CSI Features Extracted
+### Motion Status Levels
 
-| Feature      | Description                        |
-| ------------ | ---------------------------------- |
-| Statistical  | Mean, std, min, max, median, range |
-| Quartiles    | 25th, 75th percentile              |
-| Higher-order | Skewness, kurtosis                 |
-| Energy       | Sum and mean of squared amplitudes |
-| Variance     | Per-segment variance               |
-| Frequency    | FFT-based features                 |
-| RSSI         | Signal strength                    |
+| Status          | Motion Level | Indicator |
+| --------------- | ------------ | --------- |
+| No Motion       | 0-10%        | ⚪ Gray   |
+| Low Motion      | 10-40%       | 🟢 Green  |
+| Moderate Motion | 40-70%       | 🟡 Yellow |
+| High Motion     | 70-100%      | 🔴 Red    |
 
 ## 📚 API Documentation
 
 ### Camera Endpoints
 
-| Method | Endpoint               | Description               |
-| ------ | ---------------------- | ------------------------- |
-| `POST` | `/api/v1/count`        | Count from file/URL       |
-| `POST` | `/api/v1/count/upload` | Count from uploaded image |
-| `POST` | `/api/v1/count/edge`   | Receive from edge device  |
-| `GET`  | `/api/v1/count/latest` | Latest count              |
-| `GET`  | `/api/v1/stream/frame` | Live frame for streaming  |
+| Method | Endpoint               | Description                 |
+| ------ | ---------------------- | --------------------------- |
+| `POST` | `/api/v1/count`        | Count from file/URL         |
+| `POST` | `/api/v1/count/upload` | Count from uploaded image   |
+| `POST` | `/api/v1/count/edge`   | Receive from edge device    |
+| `GET`  | `/api/v1/count/latest` | Latest count result         |
+| `GET`  | `/api/v1/stream/frame` | Live frame for streaming    |
+| `GET`  | `/api/v1/count/fusion` | Fusion count (camera + CSI) |
 
-### CSI Endpoints
+### CSI Motion Detection Endpoints
 
-| Method | Endpoint                    | Description           |
-| ------ | --------------------------- | --------------------- |
-| `POST` | `/api/v1/csi/data`          | Receive CSI data      |
-| `GET`  | `/api/v1/csi/stats`         | Collection statistics |
-| `GET`  | `/api/v1/csi/buffer`        | Recent CSI samples    |
-| `GET`  | `/api/v1/csi/training-data` | Training file info    |
+| Method | Endpoint                    | Description                      |
+| ------ | --------------------------- | -------------------------------- |
+| `POST` | `/api/v1/csi/data`          | Receive CSI data + detect motion |
+| `GET`  | `/api/v1/csi/motion`        | **Real-time motion status**      |
+| `GET`  | `/api/v1/csi/stats`         | Collection statistics            |
+| `GET`  | `/api/v1/csi/buffer`        | Recent CSI samples               |
+| `POST` | `/api/v1/csi/calibrate`     | **Adjust detection thresholds**  |
+| `GET`  | `/api/v1/csi/training-data` | Training file info               |
 
-Interactive docs: `http://localhost:8000/docs`
+### WebSocket Endpoints (Edge Server)
+
+| Endpoint                | Description                          |
+| ----------------------- | ------------------------------------ |
+| `ws://HOST:8080/`       | Camera client connection (ESP32-CAM) |
+| `ws://HOST:8080/viewer` | **Frontend viewer connection**       |
+
+Interactive API docs: `http://localhost:8000/docs`
+
+## ☁️ Cloud Deployment
+
+The system can be deployed to Google Cloud Run for public access.
+
+### Deploy Backend
+
+```bash
+cd server_side/backend
+gcloud builds submit --config=cloudbuild.yaml
+```
+
+### Deploy Frontend
+
+```bash
+cd server_side/frontend
+
+# Update API URL in cloudbuild.yaml first
+gcloud builds submit --config=cloudbuild.yaml
+```
+
+### Environment Variables
+
+| Variable              | Description                             |
+| --------------------- | --------------------------------------- |
+| `NEXT_PUBLIC_API_URL` | Backend API URL                         |
+| `NEXT_PUBLIC_WS_URL`  | Edge WebSocket URL for direct streaming |
 
 ## 📊 Dataset
 
-Camera model trained on custom people counting dataset from Roboflow:
+Camera model uses YOLOv11n pre-trained on **MS COCO dataset**, filtering only `person` class (ID 0) for optimal generalization.
 
-- **Classes**: 1 (`people`)
-- **Source**: [Roboflow Universe](https://universe.roboflow.com/chris-3k2jo/people_counting-lqqio/dataset/3)
-- **License**: CC BY 4.0
+Custom dataset training was tested but showed domain shift issues in real deployment. Using COCO pre-trained weights provides better accuracy across diverse environments.
+
+- **Model**: YOLOv11n (nano)
+- **Backend**: NCNN with INT8 quantization
+- **Input Resolution**: 320×320 (optimized for edge)
+- **Confidence Threshold**: 0.25
 
 ## 🛠 Technologies
 
@@ -322,19 +343,21 @@ Camera model trained on custom people counting dataset from Roboflow:
 
 ### Edge Computing
 
-- **WiFi CSI** - Channel State Information for human sensing
-- **YOLOv11** - Object detection
-- **NCNN** - Optimized inference
+- **YOLOv11** - Object detection (Ultralytics)
+- **NCNN** - Optimized CPU inference (Tencent)
+- **WebSocket** - Real-time streaming
 
 ### Backend
 
 - **FastAPI** - Python web framework
-- **scikit-learn** - ML model training
+- **Pydantic** - Data validation
+- **Google Cloud Run** - Serverless deployment
 
 ### Frontend
 
 - **Next.js 14** - React framework
 - **Tailwind CSS** - Styling
+- **SVG Charts** - Custom visualization
 
 ## 🤝 Contributing
 
@@ -355,5 +378,5 @@ MIT License - see [LICENSE](LICENSE) file.
 ---
 
 <p align="center">
-  Made with ❤️ for CE224.Q11
+  Made with ❤️ for CE224.Q11 - Real-time People Counting with YOLOv11 & WiFi CSI
 </p>

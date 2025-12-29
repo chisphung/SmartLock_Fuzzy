@@ -13,60 +13,166 @@ interface StreamData {
 }
 
 interface LiveVideoStreamProps {
-  apiUrl?: string;
-  pollInterval?: number;
+  wsUrl?: string;
+  apiUrl?: string; // Fallback for HTTP polling if WebSocket fails
   onCountUpdate?: (count: number) => void;
 }
 
 export default function LiveVideoStream({
+  wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/viewer',
   apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000',
-  pollInterval = 200, // Poll every 200ms for smoother video
   onCountUpdate,
 }: LiveVideoStreamProps) {
   const [streamData, setStreamData] = useState<StreamData | null>(null);
   const [isConnected, setIsConnected] = useState(false);
+  const [connectionMode, setConnectionMode] = useState<'websocket' | 'polling' | 'disconnected'>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttempts = useRef(0);
+  const maxReconnectAttempts = 5;
 
-  const fetchFrame = useCallback(async () => {
-    try {
-      const response = await fetch(`${apiUrl}/api/v1/stream/frame`);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      const data: StreamData = await response.json();
-      
-      if (data.success && data.frame_base64) {
-        setStreamData(data);
-        setIsConnected(true);
-        setError(null);
-        setLastUpdate(new Date());
-        onCountUpdate?.(data.people_count);
-      } else if (data.success && !data.frame_base64) {
-        setIsConnected(true);
-        setError('Waiting for camera stream...');
-      }
-    } catch (err) {
-      setIsConnected(false);
-      setError('Cannot connect to server');
+  // Cleanup function
+  const cleanup = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
-  }, [apiUrl, onCountUpdate]);
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  }, []);
 
-  useEffect(() => {
-    // Initial fetch
-    fetchFrame();
+  // HTTP polling fallback
+  const startPolling = useCallback(() => {
+    setConnectionMode('polling');
+    console.log('[Stream] Falling back to HTTP polling');
     
-    // Start polling
-    intervalRef.current = setInterval(fetchFrame, pollInterval);
-    
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
+    const fetchFrame = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/api/v1/stream/frame`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        
+        const data = await response.json();
+        
+        if (data.success && data.frame_base64) {
+          setStreamData({
+            success: true,
+            frame_base64: data.frame_base64,
+            people_count: data.people_count,
+            detections: data.detections || [],
+            timestamp: data.timestamp,
+            camera_id: data.camera_id,
+          });
+          setIsConnected(true);
+          setError(null);
+          setLastUpdate(new Date());
+          onCountUpdate?.(data.people_count);
+        }
+      } catch (err) {
+        console.error('[Polling] Error:', err);
       }
     };
-  }, [fetchFrame, pollInterval]);
+    
+    fetchFrame();
+    pollIntervalRef.current = setInterval(fetchFrame, 200);
+  }, [apiUrl, onCountUpdate]);
+
+  // WebSocket connection
+  const connectWebSocket = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    cleanup();
+    
+    console.log(`[WebSocket] Connecting to ${wsUrl}...`);
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log('[WebSocket] Connected');
+      setIsConnected(true);
+      setConnectionMode('websocket');
+      setError(null);
+      reconnectAttempts.current = 0;
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'inference_result') {
+          setStreamData({
+            success: true,
+            frame_base64: data.frame_base64,
+            people_count: data.people_count,
+            detections: data.detections || [],
+            timestamp: data.timestamp,
+            camera_id: null,
+          });
+          setLastUpdate(new Date());
+          onCountUpdate?.(data.people_count);
+        } else if (data.type === 'pong') {
+          // Heartbeat response
+        }
+      } catch (err) {
+        console.error('[WebSocket] Parse error:', err);
+      }
+    };
+
+    ws.onerror = (event) => {
+      console.error('[WebSocket] Error:', event);
+      setError('WebSocket connection error');
+    };
+
+    ws.onclose = (event) => {
+      console.log(`[WebSocket] Closed (code: ${event.code})`);
+      setIsConnected(false);
+      wsRef.current = null;
+      
+      // Attempt reconnect with exponential backoff
+      if (reconnectAttempts.current < maxReconnectAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
+        reconnectAttempts.current++;
+        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
+        
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connectWebSocket();
+        }, delay);
+      } else {
+        console.log('[WebSocket] Max reconnect attempts reached, falling back to polling');
+        startPolling();
+      }
+    };
+  }, [wsUrl, cleanup, startPolling, onCountUpdate]);
+
+  // Initial connection
+  useEffect(() => {
+    connectWebSocket();
+    
+    return () => {
+      cleanup();
+    };
+  }, [connectWebSocket, cleanup]);
+
+  // Heartbeat to keep connection alive
+  useEffect(() => {
+    const heartbeat = setInterval(() => {
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 30000);
+    
+    return () => clearInterval(heartbeat);
+  }, []);
 
   return (
     <div className="space-y-4">
@@ -77,6 +183,15 @@ export default function LiveVideoStream({
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
             {isConnected ? 'Live' : 'Disconnected'}
           </span>
+          {connectionMode !== 'disconnected' && (
+            <span className={`text-xs px-2 py-1 rounded ${
+              connectionMode === 'websocket' 
+                ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' 
+                : 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
+            }`}>
+              {connectionMode === 'websocket' ? '⚡ WebSocket' : '🔄 Polling'}
+            </span>
+          )}
           {streamData?.camera_id && (
             <span className="text-xs px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 rounded">
               {streamData.camera_id}
@@ -115,8 +230,8 @@ export default function LiveVideoStream({
                   <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                   </svg>
-                  <p className="text-lg">{error || 'No connection'}</p>
-                  <p className="text-sm mt-2">Start the server and edge device</p>
+                  <p className="text-lg">{error || 'Connecting...'}</p>
+                  <p className="text-sm mt-2">WebSocket: {wsUrl}</p>
                 </>
               )}
             </div>

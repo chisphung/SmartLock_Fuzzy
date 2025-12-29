@@ -59,7 +59,7 @@ steps:
 
 # Substitution variables (override _API_URL with your backend URL)
 substitutions:
-  _REGION: "us-central1"
+  _REGION: "asia-southeast1"
   _API_URL: "https://people-counting-api-zk43zjlhoq-uc.a.run.app"
 
 # Build options

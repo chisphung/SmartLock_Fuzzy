@@ -229,3 +229,16 @@ edge_side/camera/dependencies.lock
 edge_side/camera/.clangd
 edge_side/camera/.vscode/
 edge_side/camera/.devcontainer/
+
+# Weights and models
+**/weights/*.pt
+**/weights/*.bin
+**/weights/*.svm
+**/weights/*_ncnn_model/
+**/weights/*_ncnn_model_coco/
+custom_models/*.xml
+training_process/*.pt
+
+# Temporary results and data
+**/infra/tmp/
+**/csi_data/*.jsonl

@@ -7,6 +7,9 @@ __pycache__/
 *.so
 .venv/
 # Distribution / packaging
+VN-celeb/
+wider_face_split/
+WIDER*/
 .Python
 build/
 develop-eggs/

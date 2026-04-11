@@ -282,7 +282,7 @@ async def main(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
-    DEFAULT_SERVER_URL = "https://people-counting-api-304130190385.asia-east1.run.app"
+    DEFAULT_SERVER_URL = "http://10.10.0.20"
 
     parser = argparse.ArgumentParser(
         description="ESP32 WebSocket Server – Haar Detection + LBPH Recognition"

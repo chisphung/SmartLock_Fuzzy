@@ -91,18 +91,35 @@ class FaceDetection:
         boxes = self._detect_faces(gray)
         annotated = image.copy()
         detections = []
-
-        for (x, y, w, h) in boxes:
-            name, conf = self._recognise(gray, x, y, w, h)
+        # TODO: if there are more than two bounding boxes, take the bounding box with largest area; else, take the only one
+        if len(boxes) > 1:
+            print("[DEBUG] There are more than two faces in a frame, take the largest area one")
+            areas = [w*h for (x, y, w, h) in boxes]
+            max_area_index = areas.index(max(areas))
+            name, conf = self._recognise(gray, boxes[max_area_index][0], boxes[max_area_index][1], boxes[max_area_index][2], boxes[max_area_index][3])
             detections.append({
-                "bbox": [int(x), int(y), int(x+w), int(y+h)],
+                "bbox": [int(boxes[max_area_index][0]), int(boxes[max_area_index][1]), int(boxes[max_area_index][2]), int(boxes[max_area_index][3])],
                 "name": name,
                 "confidence": round(conf, 2)
             })
             colour = (0, 200, 0) if name != self.UNKNOWN_LABEL else (0, 100, 255)
-            cv2.rectangle(annotated, (x, y), (x+w, y+h), colour, 2)
+            cv2.rectangle(annotated, (boxes[max_area_index][0], boxes[max_area_index][1]), (boxes[max_area_index][2], boxes[max_area_index][3]), colour, 2)
             label = f"{name} ({conf:.0f})" if name != self.UNKNOWN_LABEL else name
-            cv2.putText(annotated, label, (x, y - 8),
+            cv2.putText(annotated, label, (boxes[max_area_index][0], boxes[max_area_index][1] - 8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 1)
+            
+        else: 
+            print("[DEBUG] There is only one face in the frame")
+            name, conf = self._recognise(gray, boxes[0][0], boxes[0][1], boxes[0][2], boxes[0][3])
+            detections.append({
+                "bbox": [int(boxes[0][0]), int(boxes[0][1]), int(boxes[0][2]), int(boxes[0][3])],
+                "name": name,
+                "confidence": round(conf, 2)
+            })
+            colour = (0, 200, 0) if name != self.UNKNOWN_LABEL else (0, 100, 255)
+            cv2.rectangle(annotated, (boxes[0][0], boxes[0][1]), (boxes[0][2], boxes[0][3]), colour, 2)
+            label = f"{name} ({conf:.0f})" if name != self.UNKNOWN_LABEL else name
+            cv2.putText(annotated, label, (boxes[0][0], boxes[0][1] - 8),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 1)
 
         return {

@@ -21,6 +21,7 @@ import numpy as np
 import websockets
 
 from face_detection import FaceDetection
+from fuzzy_controller import FuzzySecurityController
 from api_client import send_to_server_background, send_csi_to_server
 from display import display_loop, submit_frame, stop_event
 
@@ -90,6 +91,7 @@ async def broadcast_to_viewers(result: dict, frame_base64: str | None) -> None:
 async def handle_camera(
     ws: websockets.WebSocketServerProtocol,
     counter: FaceDetection,
+    fuzzy: FuzzySecurityController,
     server_url: str,
     display: bool,
     send_interval: float,
@@ -129,19 +131,68 @@ async def handle_camera(
                     frame_count += 1
 
                     result = counter.count(frame)
+
+                    # ── Fuzzy security evaluation ────────────────────
+                    fuzzy_result = None
+                    if result["detections"]:
+                        det = result["detections"][0]
+                        # Invert LBPH distance: lower distance = higher confidence
+                        raw_conf = det.get("confidence", 0.0)
+                        model_confidence = max(0.0, min(100.0, 100.0 - raw_conf))
+                        illumination = det.get("illumination", 128.0)
+                        facial_angle = det.get("facial_angle", 0.0)
+
+                        fuzzy_result = fuzzy.evaluate(
+                            confidence=model_confidence,
+                            illumination=illumination,
+                            facial_angle=facial_angle,
+                        )
+                        print(
+                            f"[Fuzzy] risk={fuzzy_result['security_risk']:.3f} "
+                            f"action={fuzzy_result['action']} "
+                            f"(C={model_confidence:.1f} I={illumination:.1f} "
+                            f"θ={facial_angle:.1f}°)"
+                        )
+
+                        # Send action command to ESP32
+                        action = fuzzy_result["action"]
+                        if action == "unlock":
+                            cmd = {"action": "lock_grant",
+                                   "user": det.get("name", "Unknown")}
+                        elif action == "otp":
+                            cmd = {"action": "request_otp",
+                                   "user": det.get("name", "Unknown")}
+                        elif action in ("deny", "lockout"):
+                            cmd = {"action": "lock_deny",
+                                   "reason": fuzzy_result["details"]}
+                        else:
+                            cmd = None
+
+                        if cmd:
+                            try:
+                                await ws.send(json.dumps(cmd))
+                            except websockets.ConnectionClosed:
+                                pass
+
                     latest_count = {
                         "faces_count": result["faces_count"],
                         "detections": result["detections"],
                         "timestamp": result["timestamp"],
+                        "fuzzy": fuzzy_result,
                     }
 
                     if display:
                         annotated = result["annotated_image"].copy()
+                        status_text = f"Faces: {result['faces_count']}"
+                        if fuzzy_result:
+                            status_text += (
+                                f" | Risk: {fuzzy_result['security_risk']:.2f}"
+                                f" → {fuzzy_result['action'].upper()}"
+                            )
                         cv2.putText(
-                            annotated,
-                            f"Faces: {result['faces_count']}",
+                            annotated, status_text,
                             (10, 30), cv2.FONT_HERSHEY_SIMPLEX,
-                            1, (0, 200, 0), 2,
+                            0.7, (0, 200, 0), 2,
                         )
                         submit_frame(annotated)
 
@@ -243,7 +294,8 @@ async def wait_for_stop() -> None:
 
 async def main(args: argparse.Namespace) -> None:
     counter = FaceDetection(recognizer_path=args.recognizer)
-    print("[Server] Pipeline: Haar detection + LBPH recognition")
+    fuzzy = FuzzySecurityController()
+    print("[Server] Pipeline: Haar detection + LBPH recognition + Fuzzy security")
     if not args.recognizer:
         print("[Server] Recognition: detection-only (no --recognizer model supplied)")
 
@@ -258,7 +310,7 @@ async def main(args: argparse.Namespace) -> None:
         if "/viewer" in path_str:
             await handle_viewer(ws)
         else:
-            await handle_camera(ws, counter, args.server, args.display, args.send_interval)
+            await handle_camera(ws, counter, fuzzy, args.server, args.display, args.send_interval)
 
     async with websockets.serve(
         handler, "0.0.0.0", args.port,

@@ -78,7 +78,58 @@ class FaceDetection:
             name = self.UNKNOWN_LABEL
         return name, float(confidence)
 
-    # ── public ───────────────────────────────────────────────────────────────
+    # ── fuzzy input estimators ───────────────────────────────────────────
+
+    @staticmethod
+    def _estimate_illumination(gray: np.ndarray, x: int, y: int,
+                               w: int, h: int) -> float:
+        """
+        Compute mean brightness of the face ROI (0–255).
+
+        Used as the Illumination antecedent for the fuzzy controller.
+        """
+        roi = gray[y:y+h, x:x+w]
+        return float(np.mean(roi)) if roi.size > 0 else 128.0
+
+    @staticmethod
+    def _estimate_facial_angle(gray: np.ndarray, x: int, y: int,
+                               w: int, h: int) -> float:
+        """
+        Estimate face yaw angle via left/right brightness symmetry.
+
+        Returns a value in [0, 90]:
+          0  → perfectly frontal (symmetric)
+          90 → extreme profile  (highly asymmetric)
+
+        Method: split the face ROI vertically into left/right halves,
+        compute the mean brightness of each, and derive an asymmetry
+        ratio.  This is a lightweight heuristic suitable for the
+        ESP32-CAM resolution; it does NOT require facial landmarks.
+        """
+        roi = gray[y:y+h, x:x+w]
+        if roi.size == 0 or w < 4:
+            return 0.0
+
+        mid = w // 2
+        left_half = roi[:, :mid]
+        right_half = roi[:, mid:]
+
+        mean_left = float(np.mean(left_half))  if left_half.size  > 0 else 128.0
+        mean_right = float(np.mean(right_half)) if right_half.size > 0 else 128.0
+
+        # Avoid division by zero
+        total = mean_left + mean_right
+        if total < 1.0:
+            return 0.0
+
+        # Asymmetry ratio: 0 (symmetric) to 1 (fully one-sided)
+        asymmetry = abs(mean_left - mean_right) / total
+
+        # Scale to 0–90 degrees (capped)
+        angle = min(asymmetry * 180.0, 90.0)
+        return round(angle, 2)
+
+    # ── public ───────────────────────────────────────────────────────────
 
     def count(self, image: np.ndarray) -> dict:
         """
@@ -86,45 +137,53 @@ class FaceDetection:
 
         Returns dict with:
           faces_count, detections (list), annotated_image, timestamp
+
+        Each detection includes:
+          bbox, name, confidence, illumination, facial_angle
         """
         gray  = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         boxes = self._detect_faces(gray)
         annotated = image.copy()
         detections = []
-        # TODO: if there are more than two bounding boxes, take the bounding box with largest area; else, take the only one
+
+        if len(boxes) == 0:
+            return {
+                "faces_count": 0,
+                "detections": [],
+                "annotated_image": annotated,
+                "timestamp": datetime.now().isoformat(),
+            }
+
+        # If more than one face, take the one with the largest area
         if len(boxes) > 1:
-            print("[DEBUG] There are more than two faces in a frame, take the largest area one")
-            areas = [w*h for (x, y, w, h) in boxes]
-            max_area_index = areas.index(max(areas))
-            name, conf = self._recognise(gray, boxes[max_area_index][0], boxes[max_area_index][1], boxes[max_area_index][2], boxes[max_area_index][3])
-            detections.append({
-                "bbox": [int(boxes[max_area_index][0]), int(boxes[max_area_index][1]), int(boxes[max_area_index][2]), int(boxes[max_area_index][3])],
-                "name": name,
-                "confidence": round(conf, 2)
-            })
-            colour = (0, 200, 0) if name != self.UNKNOWN_LABEL else (0, 100, 255)
-            cv2.rectangle(annotated, (boxes[max_area_index][0], boxes[max_area_index][1]), (boxes[max_area_index][2], boxes[max_area_index][3]), colour, 2)
-            label = f"{name} ({conf:.0f})" if name != self.UNKNOWN_LABEL else name
-            cv2.putText(annotated, label, (boxes[max_area_index][0], boxes[max_area_index][1] - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 1)
-            
-        else: 
-            print("[DEBUG] There is only one face in the frame")
-            name, conf = self._recognise(gray, boxes[0][0], boxes[0][1], boxes[0][2], boxes[0][3])
-            detections.append({
-                "bbox": [int(boxes[0][0]), int(boxes[0][1]), int(boxes[0][2]), int(boxes[0][3])],
-                "name": name,
-                "confidence": round(conf, 2)
-            })
-            colour = (0, 200, 0) if name != self.UNKNOWN_LABEL else (0, 100, 255)
-            cv2.rectangle(annotated, (boxes[0][0], boxes[0][1]), (boxes[0][2], boxes[0][3]), colour, 2)
-            label = f"{name} ({conf:.0f})" if name != self.UNKNOWN_LABEL else name
-            cv2.putText(annotated, label, (boxes[0][0], boxes[0][1] - 8),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 1)
+            print("[DEBUG] Multiple faces detected, taking largest area")
+            areas = [w * h for (x, y, w, h) in boxes]
+            max_idx = areas.index(max(areas))
+            boxes = [boxes[max_idx]]
+
+        # Process the single selected face
+        x, y, w, h = boxes[0]
+        name, conf = self._recognise(gray, x, y, w, h)
+        illumination = self._estimate_illumination(gray, x, y, w, h)
+        facial_angle = self._estimate_facial_angle(gray, x, y, w, h)
+
+        detections.append({
+            "bbox": [int(x), int(y), int(w), int(h)],
+            "name": name,
+            "confidence": round(conf, 2),
+            "illumination": round(illumination, 2),
+            "facial_angle": round(facial_angle, 2),
+        })
+
+        colour = (0, 200, 0) if name != self.UNKNOWN_LABEL else (0, 100, 255)
+        cv2.rectangle(annotated, (x, y), (x + w, y + h), colour, 2)
+        label = f"{name} ({conf:.0f})" if name != self.UNKNOWN_LABEL else name
+        cv2.putText(annotated, label, (x, y - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, colour, 1)
 
         return {
             "faces_count": len(boxes),
             "detections": detections,
             "annotated_image": annotated,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
         }

@@ -411,11 +411,40 @@ static void handle_lock_command(cJSON *root)
       cJSON_Delete(ack);
     }
   }
+  else if (strcmp(action->valuestring, "request_otp") == 0)
+  {
+    const cJSON *user = cJSON_GetObjectItemCaseSensitive(root, "user");
+    if (user && cJSON_IsString(user))
+      ESP_LOGI(TAG, "OTP REQUIRED for: %s", user->valuestring);
+    else
+      ESP_LOGI(TAG, "OTP REQUIRED");
+
+    /* Slow blink LED to indicate OTP is needed (distinct from deny) */
+    for (int i = 0; i < 3; i++)
+    {
+      gpio_set_level(LED_GPIO, 0);
+      vTaskDelay(pdMS_TO_TICKS(400));
+      gpio_set_level(LED_GPIO, 1);
+      vTaskDelay(pdMS_TO_TICKS(400));
+    }
+
+    /* TODO: Wait for OTP passkey input from keyboard and verify */
+
+    /* Acknowledge */
+    cJSON *ack = cJSON_CreateObject();
+    if (ack)
+    {
+      cJSON_AddStringToObject(ack, "status", "otp_pending");
+      cJSON_AddStringToObject(ack, "message", "Awaiting OTP input");
+      send_ws_json(ack);
+      cJSON_Delete(ack);
+    }
+  }
   else if (strcmp(action->valuestring, "lock_deny") == 0)
   {
     ESP_LOGW(TAG, "ACCESS DENIED");
 
-    /* Blink LED to indicate denial */
+    /* Fast blink LED to indicate denial */
     for (int i = 0; i < 3; i++)
     {
       gpio_set_level(LED_GPIO, 0);

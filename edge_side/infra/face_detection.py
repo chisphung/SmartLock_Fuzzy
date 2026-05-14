@@ -43,6 +43,8 @@ class FaceDetection:
 
     def _load_recognizer(self) -> None:
         """Load LBPH model + optional label map if files exist."""
+        self._recognizer = None
+        self._label_map = {}
         if not self.recognizer_path or not os.path.exists(self.recognizer_path):
             return
         try:
@@ -59,6 +61,12 @@ class FaceDetection:
         except Exception as e:
             print(f"[Recognition] Failed to load model: {e} — running detection-only")
             self._recognizer = None
+
+    def reload_recognizer(self, recognizer_path: str | None = None) -> None:
+        """Reload the LBPH model after registration or retraining."""
+        if recognizer_path is not None:
+            self.recognizer_path = recognizer_path
+        self._load_recognizer()
 
     def _detect_faces(self, gray: np.ndarray) -> list:
         """Single-cascade detection, same params as test_haar.py."""
@@ -186,4 +194,77 @@ class FaceDetection:
             "detections": detections,
             "annotated_image": annotated,
             "timestamp": datetime.now().isoformat(),
+        }
+
+    def extract_registration_face(
+        self,
+        image: np.ndarray,
+        img_size: tuple[int, int] = (100, 100),
+    ) -> tuple[np.ndarray | None, dict]:
+        """
+        Extract a face ROI suitable for LBPH enrollment.
+
+        Returns (roi, metadata). roi is a resized grayscale face image when
+        accepted, otherwise None with a rejection reason in metadata.
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        boxes = self._detect_faces(gray)
+
+        if not boxes:
+            return None, {"accepted": False, "reason": "No face detected"}
+
+        if len(boxes) > 1:
+            return None, {"accepted": False, "reason": "Multiple faces detected"}
+
+        x, y, w, h = boxes[0]
+        roi = gray[y:y + h, x:x + w]
+        if roi.size == 0:
+            return None, {"accepted": False, "reason": "Invalid face crop"}
+
+        illumination = self._estimate_illumination(gray, x, y, w, h)
+        facial_angle = self._estimate_facial_angle(gray, x, y, w, h)
+        blur_score = float(cv2.Laplacian(roi, cv2.CV_64F).var())
+
+        if min(w, h) < 32:
+            return None, {
+                "accepted": False,
+                "reason": "Move closer to the camera",
+                "bbox": [int(x), int(y), int(w), int(h)],
+            }
+
+        if illumination < 35:
+            return None, {
+                "accepted": False,
+                "reason": "Face is too dark",
+                "illumination": round(illumination, 2),
+            }
+
+        if illumination > 230:
+            return None, {
+                "accepted": False,
+                "reason": "Face is too bright",
+                "illumination": round(illumination, 2),
+            }
+
+        if facial_angle > 40:
+            return None, {
+                "accepted": False,
+                "reason": "Face the camera more directly",
+                "facial_angle": round(facial_angle, 2),
+            }
+
+        if blur_score < 20:
+            return None, {
+                "accepted": False,
+                "reason": "Frame is too blurry",
+                "blur_score": round(blur_score, 2),
+            }
+
+        resized = cv2.resize(roi, img_size)
+        return resized, {
+            "accepted": True,
+            "bbox": [int(x), int(y), int(w), int(h)],
+            "illumination": round(illumination, 2),
+            "facial_angle": round(facial_angle, 2),
+            "blur_score": round(blur_score, 2),
         }

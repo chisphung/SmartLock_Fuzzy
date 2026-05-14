@@ -37,6 +37,9 @@ MANIFEST
 dataset/train/
 dataset/valid/
 dataset/test/
+registered_faces/
+custom_models/smartlock_lbph_model.xml
+custom_models/smartlock_lbph_model.json
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt

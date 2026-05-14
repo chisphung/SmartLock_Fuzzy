@@ -24,10 +24,10 @@ export default function Header() {
             </div>
             <div>
               <h1 className="text-xl font-bold text-gray-800 dark:text-white">
-                People Counting
+                Face Access Control
               </h1>
               <p className="text-sm text-gray-500 dark:text-gray-400">
-                Powered by YOLOv11
+                ESP32-CAM Smart Lock
               </p>
             </div>
           </div>

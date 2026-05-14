@@ -1,3 +1,3 @@
-from . import count_people
+from . import count_people, get_camera
 
-__all__ = ["count_people"]
+__all__ = ["count_people", "get_camera"]

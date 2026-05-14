@@ -1,22 +1,55 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback } from 'react';
-import { Detection } from '@/types';
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+
+interface FaceDetection {
+  bbox: number[];
+  name?: string;
+  confidence?: number;
+  illumination?: number;
+  facial_angle?: number;
+}
+
+interface FuzzyDecision {
+  security_risk: number;
+  action: 'unlock' | 'otp' | 'deny' | 'lockout' | string;
+  details?: string;
+  inputs?: Record<string, number>;
+}
 
 interface StreamData {
   success: boolean;
+  mode: 'face_security' | string;
   frame_base64: string | null;
-  people_count: number;
-  detections: Detection[];
+  faces_count: number;
+  detections: FaceDetection[];
   timestamp: string | null;
   camera_id: string | null;
+  fuzzy?: FuzzyDecision | null;
+}
+
+interface RegistrationStatus {
+  type: string;
+  name?: string;
+  user_id?: string;
+  accepted?: number;
+  required?: number;
+  status?: string;
+  message?: string;
 }
 
 interface LiveVideoStreamProps {
   wsUrl?: string;
-  apiUrl?: string; // Fallback for HTTP polling if WebSocket fails
+  apiUrl?: string;
   onCountUpdate?: (count: number) => void;
 }
+
+const actionStyles: Record<string, string> = {
+  unlock: 'bg-green-600 text-white',
+  otp: 'bg-yellow-500 text-gray-950',
+  deny: 'bg-red-600 text-white',
+  lockout: 'bg-red-800 text-white',
+};
 
 export default function LiveVideoStream({
   wsUrl = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/viewer',
@@ -28,13 +61,21 @@ export default function LiveVideoStream({
   const [connectionMode, setConnectionMode] = useState<'websocket' | 'polling' | 'disconnected'>('disconnected');
   const [error, setError] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [registrationName, setRegistrationName] = useState('');
+  const [registrationStatus, setRegistrationStatus] = useState<RegistrationStatus | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 5;
 
-  // Cleanup function
+  const currentFace = streamData?.detections[0];
+  const fuzzy = streamData?.fuzzy;
+  const registrationProgress = useMemo(() => {
+    if (!registrationStatus?.required) return 0;
+    return Math.min(100, ((registrationStatus.accepted ?? 0) / registrationStatus.required) * 100);
+  }, [registrationStatus]);
+
   const cleanup = useCallback(() => {
     if (wsRef.current) {
       wsRef.current.close();
@@ -50,55 +91,58 @@ export default function LiveVideoStream({
     }
   }, []);
 
-  // HTTP polling fallback
+  const applyStreamPayload = useCallback((data: any) => {
+    const facesCount = data.faces_count ?? data.people_count ?? 0;
+
+    setStreamData({
+      success: true,
+      mode: data.mode ?? 'face_security',
+      frame_base64: data.frame_base64 ?? null,
+      faces_count: facesCount,
+      detections: data.detections || [],
+      timestamp: data.timestamp ?? null,
+      camera_id: data.camera_id ?? null,
+      fuzzy: data.fuzzy ?? null,
+    });
+    setLastUpdate(new Date());
+    onCountUpdate?.(facesCount);
+  }, [onCountUpdate]);
+
   const startPolling = useCallback(() => {
     setConnectionMode('polling');
-    console.log('[Stream] Falling back to HTTP polling');
-    
+
     const fetchFrame = async () => {
       try {
-        const response = await fetch(`${apiUrl}/api/v1/stream/frame`);
+        const response = await fetch(`${apiUrl}/api/v1/camera/frame`);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        
+
         const data = await response.json();
-        
         if (data.success && data.frame_base64) {
-          setStreamData({
-            success: true,
-            frame_base64: data.frame_base64,
-            people_count: data.people_count,
-            detections: data.detections || [],
-            timestamp: data.timestamp,
-            camera_id: data.camera_id,
-          });
+          applyStreamPayload(data);
           setIsConnected(true);
           setError(null);
-          setLastUpdate(new Date());
-          onCountUpdate?.(data.people_count);
         }
       } catch (err) {
         console.error('[Polling] Error:', err);
+        setIsConnected(false);
       }
     };
-    
-    fetchFrame();
-    pollIntervalRef.current = setInterval(fetchFrame, 200);
-  }, [apiUrl, onCountUpdate]);
 
-  // WebSocket connection
+    fetchFrame();
+    pollIntervalRef.current = setInterval(fetchFrame, 250);
+  }, [apiUrl, applyStreamPayload]);
+
   const connectWebSocket = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
     }
 
     cleanup();
-    
-    console.log(`[WebSocket] Connecting to ${wsUrl}...`);
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log('[WebSocket] Connected');
       setIsConnected(true);
       setConnectionMode('websocket');
       setError(null);
@@ -108,176 +152,250 @@ export default function LiveVideoStream({
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'inference_result') {
-          setStreamData({
-            success: true,
-            frame_base64: data.frame_base64,
-            people_count: data.people_count,
-            detections: data.detections || [],
-            timestamp: data.timestamp,
-            camera_id: null,
-          });
-          setLastUpdate(new Date());
-          onCountUpdate?.(data.people_count);
-        } else if (data.type === 'pong') {
-          // Heartbeat response
+          applyStreamPayload(data);
+        } else if (data.type?.startsWith('registration_')) {
+          setRegistrationStatus(data);
         }
       } catch (err) {
         console.error('[WebSocket] Parse error:', err);
       }
     };
 
-    ws.onerror = (event) => {
-      console.error('[WebSocket] Error:', event);
+    ws.onerror = () => {
       setError('WebSocket connection error');
     };
 
     ws.onclose = (event) => {
-      console.log(`[WebSocket] Closed (code: ${event.code})`);
       setIsConnected(false);
       wsRef.current = null;
-      
-      // Attempt reconnect with exponential backoff
+
       if (reconnectAttempts.current < maxReconnectAttempts) {
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
         reconnectAttempts.current++;
-        console.log(`[WebSocket] Reconnecting in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`);
-        
+
         reconnectTimeoutRef.current = setTimeout(() => {
           connectWebSocket();
         }, delay);
       } else {
-        console.log('[WebSocket] Max reconnect attempts reached, falling back to polling');
+        console.log(`[WebSocket] Closed after retries (code: ${event.code}); using polling`);
         startPolling();
       }
     };
-  }, [wsUrl, cleanup, startPolling, onCountUpdate]);
+  }, [wsUrl, cleanup, startPolling, applyStreamPayload]);
 
-  // Initial connection
   useEffect(() => {
     connectWebSocket();
-    
+
     return () => {
       cleanup();
     };
   }, [connectWebSocket, cleanup]);
 
-  // Heartbeat to keep connection alive
   useEffect(() => {
     const heartbeat = setInterval(() => {
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(JSON.stringify({ type: 'ping' }));
       }
     }, 30000);
-    
+
     return () => clearInterval(heartbeat);
   }, []);
 
+  const sendRegistrationCommand = useCallback((payload: Record<string, unknown>) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      setRegistrationStatus({
+        type: 'registration_error',
+        status: 'error',
+        message: 'Registration requires the edge WebSocket connection',
+      });
+      return;
+    }
+
+    wsRef.current.send(JSON.stringify(payload));
+  }, []);
+
+  const startRegistration = () => {
+    const name = registrationName.trim();
+    if (!name) {
+      setRegistrationStatus({
+        type: 'registration_error',
+        status: 'error',
+        message: 'Enter a name before registration',
+      });
+      return;
+    }
+
+    sendRegistrationCommand({
+      type: 'register_start',
+      name,
+      samples_required: 30,
+    });
+  };
+
+  const cancelRegistration = () => {
+    sendRegistrationCommand({ type: 'register_cancel' });
+  };
+
+  const action = fuzzy?.action ?? 'waiting';
+  const actionClass = actionStyles[action] ?? 'bg-gray-600 text-white';
+
   return (
     <div className="space-y-4">
-      {/* Status Bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg">
-        <div className="flex items-center space-x-3">
-          <div className={`w-3 h-3 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`} />
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-gray-100 px-4 py-2 dark:bg-gray-700">
+        <div className="flex items-center gap-3">
+          <div className={`h-3 w-3 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
           <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
             {isConnected ? 'Live' : 'Disconnected'}
           </span>
-          {connectionMode !== 'disconnected' && (
-            <span className={`text-xs px-2 py-1 rounded ${
-              connectionMode === 'websocket' 
-                ? 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-200' 
-                : 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-200'
-            }`}>
-              {connectionMode === 'websocket' ? '⚡ WebSocket' : '🔄 Detecting'}
-            </span>
-          )}
+          <span className="rounded bg-gray-200 px-2 py-1 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+            {connectionMode}
+          </span>
           {streamData?.camera_id && (
-            <span className="text-xs px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-800 dark:text-blue-200 rounded">
+            <span className="rounded bg-blue-100 px-2 py-1 text-xs text-blue-800 dark:bg-blue-900 dark:text-blue-200">
               {streamData.camera_id}
             </span>
           )}
         </div>
-        
-        {/* People Count Badge */}
-        <div className="flex items-center space-x-2">
-          <span className="text-sm text-gray-600 dark:text-gray-400">People:</span>
-          <span className="px-3 py-1 bg-gradient-to-r from-blue-500 to-purple-600 text-white text-xl font-bold rounded-lg shadow">
-            {streamData?.people_count ?? 0}
+
+        <div className="flex items-center gap-2">
+          <span className="text-sm text-gray-600 dark:text-gray-400">Faces</span>
+          <span className="rounded-lg bg-blue-600 px-3 py-1 text-xl font-bold text-white shadow">
+            {streamData?.faces_count ?? 0}
           </span>
         </div>
       </div>
 
-      {/* Video Display */}
-      <div className="relative w-full aspect-video bg-gray-900 rounded-xl overflow-hidden shadow-lg">
+      <div className="grid gap-3 rounded-lg border border-gray-700/50 bg-gray-900/40 p-4 sm:grid-cols-[1fr_auto_auto]">
+        <input
+          value={registrationName}
+          onChange={(event) => setRegistrationName(event.target.value)}
+          placeholder="Face name"
+          className="min-w-0 rounded-lg border border-gray-600 bg-gray-950 px-3 py-2 text-white outline-none focus:border-blue-500"
+        />
+        <button
+          type="button"
+          onClick={startRegistration}
+          disabled={connectionMode !== 'websocket'}
+          className="rounded-lg bg-green-600 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:bg-gray-600"
+        >
+          Register
+        </button>
+        <button
+          type="button"
+          onClick={cancelRegistration}
+          disabled={connectionMode !== 'websocket'}
+          className="rounded-lg bg-gray-700 px-4 py-2 font-medium text-white disabled:cursor-not-allowed disabled:bg-gray-600"
+        >
+          Cancel
+        </button>
+
+        {registrationStatus && (
+          <div className="sm:col-span-3">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="text-gray-300">
+                {registrationStatus.message ?? registrationStatus.status}
+              </span>
+              {registrationStatus.required ? (
+                <span className="text-gray-400">
+                  {registrationStatus.accepted ?? 0}/{registrationStatus.required}
+                </span>
+              ) : null}
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-gray-800">
+              <div
+                className="h-full bg-green-500 transition-all"
+                style={{ width: `${registrationProgress}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-gray-900 shadow-lg">
         {streamData?.frame_base64 ? (
           <img
             src={`data:image/jpeg;base64,${streamData.frame_base64}`}
-            alt="Live Camera Stream"
-            className="w-full h-full object-contain"
+            alt="Live camera stream"
+            className="h-full w-full object-contain"
           />
         ) : (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-center text-gray-400">
               {isConnected ? (
                 <>
-                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto mb-4" />
-                  <p className="text-lg">Waiting for camera stream...</p>
-                  <p className="text-sm mt-2">Make sure the edge device is running</p>
+                  <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-b-2 border-t-2 border-blue-500" />
+                  <p className="text-lg">Waiting for camera stream</p>
                 </>
               ) : (
                 <>
-                  <svg className="w-16 h-16 mx-auto mb-4 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                  <p className="text-lg">{error || 'Connecting...'}</p>
-                  <p className="text-sm mt-2">WebSocket: {wsUrl}</p>
+                  <p className="text-lg">{error || 'Connecting'}</p>
+                  <p className="mt-2 text-sm">{wsUrl}</p>
                 </>
               )}
             </div>
           </div>
         )}
-        
-        {/* Live indicator overlay */}
+
         {streamData?.frame_base64 && (
-          <div className="absolute top-4 left-4 flex items-center space-x-2 px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded-full">
-            <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-            <span className="text-white text-sm font-medium">LIVE</span>
+          <div className="absolute left-4 top-4 flex items-center gap-2 rounded-full bg-black/50 px-3 py-1.5">
+            <div className="h-2 w-2 rounded-full bg-red-500" />
+            <span className="text-sm font-medium text-white">LIVE</span>
           </div>
         )}
-        
-        {/* Timestamp overlay */}
+
         {streamData?.timestamp && (
-          <div className="absolute bottom-4 right-4 px-3 py-1.5 bg-black/50 backdrop-blur-sm rounded text-white text-xs font-mono">
+          <div className="absolute bottom-4 right-4 rounded bg-black/50 px-3 py-1.5 font-mono text-xs text-white">
             {new Date(streamData.timestamp).toLocaleTimeString()}
           </div>
         )}
       </div>
 
-      {/* Detection Stats */}
-      {streamData && streamData.detections.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <div className="p-3 bg-gradient-to-br from-blue-500 to-blue-600 rounded-lg text-white">
-            <div className="text-2xl font-bold">{streamData.people_count}</div>
-            <div className="text-xs opacity-80">People Detected</div>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <div className="rounded-lg bg-blue-600 p-3 text-white">
+          <div className="text-2xl font-bold">{streamData?.faces_count ?? 0}</div>
+          <div className="text-xs opacity-80">Faces Detected</div>
+        </div>
+        <div className="rounded-lg bg-gray-700 p-3 text-white">
+          <div className="truncate text-2xl font-bold">
+            {currentFace?.name ?? 'Unknown'}
           </div>
-          <div className="p-3 bg-gradient-to-br from-green-500 to-green-600 rounded-lg text-white">
-            <div className="text-2xl font-bold">{streamData.detections.length}</div>
-            <div className="text-xs opacity-80">Total Detections</div>
+          <div className="text-xs opacity-80">Identity</div>
+        </div>
+        <div className={`rounded-lg p-3 ${actionClass}`}>
+          <div className="truncate text-2xl font-bold uppercase">{action}</div>
+          <div className="text-xs opacity-80">
+            Risk {fuzzy ? Math.round(fuzzy.security_risk * 100) : 0}%
           </div>
-          <div className="p-3 bg-gradient-to-br from-purple-500 to-purple-600 rounded-lg text-white">
-            <div className="text-2xl font-bold">
-              {streamData.detections.length > 0 
-                ? (streamData.detections.reduce((acc, d) => acc + d.confidence, 0) / streamData.detections.length * 100).toFixed(0)
-                : 0}%
+        </div>
+        <div className="rounded-lg bg-orange-600 p-3 text-white">
+          <div className="text-2xl font-bold">
+            {lastUpdate ? Math.round((Date.now() - lastUpdate.getTime()) / 1000) : '-'}s
+          </div>
+          <div className="text-xs opacity-80">Last Update</div>
+        </div>
+      </div>
+
+      {currentFace && (
+        <div className="grid gap-3 rounded-lg bg-gray-800/70 p-4 text-sm text-gray-300 sm:grid-cols-3">
+          <div>
+            <span className="text-gray-500">LBPH distance</span>
+            <div className="text-lg font-semibold text-white">
+              {(currentFace.confidence ?? 0).toFixed(2)}
             </div>
-            <div className="text-xs opacity-80">Avg Confidence</div>
           </div>
-          <div className="p-3 bg-gradient-to-br from-orange-500 to-orange-600 rounded-lg text-white">
-            <div className="text-2xl font-bold">
-              {lastUpdate ? Math.round((Date.now() - lastUpdate.getTime()) / 1000) : '—'}s
+          <div>
+            <span className="text-gray-500">Illumination</span>
+            <div className="text-lg font-semibold text-white">
+              {(currentFace.illumination ?? 0).toFixed(1)}
             </div>
-            <div className="text-xs opacity-80">Last Update</div>
+          </div>
+          <div>
+            <span className="text-gray-500">Facial angle</span>
+            <div className="text-lg font-semibold text-white">
+              {(currentFace.facial_angle ?? 0).toFixed(1)} deg
+            </div>
           </div>
         </div>
       )}

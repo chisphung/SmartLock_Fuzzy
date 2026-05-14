@@ -22,16 +22,18 @@ def _encode_frame(result: dict) -> str | None:
 
 def _build_payload(result: dict, frame_b64: str | None) -> dict:
     return {
-        "faces_count": result.get("faces_count", 0),
+        "faces_count": result.get("faces_count", result.get("people_count", 0)),
         "detections":  result.get("detections", []),
         "timestamp":   result.get("timestamp"),
         "frame_base64": frame_b64,
+        "camera_id": result.get("camera_id", "esp32_cam"),
+        "fuzzy": result.get("fuzzy"),
     }
 
 
 async def send_to_server(server_url: str, result: dict) -> bool:
     """Send result with annotated frame to the backend (awaitable)."""
-    endpoint = f"{server_url}/api/v1/count/edge"
+    endpoint = f"{server_url}/api/v1/camera/edge"
     payload  = _build_payload(result, _encode_frame(result))
 
     try:
@@ -50,7 +52,7 @@ async def send_to_server(server_url: str, result: dict) -> bool:
 
 async def send_to_server_background(server_url: str, result: dict) -> None:
     """Fire-and-forget background POST (silently drops errors)."""
-    endpoint = f"{server_url}/api/v1/count/edge"
+    endpoint = f"{server_url}/api/v1/camera/edge"
     payload  = _build_payload(result, _encode_frame(result))
 
     try:
@@ -71,6 +73,7 @@ async def send_csi_to_server(server_url: str, csi_data: dict,
         "rssi":            csi_data.get("rssi"),
         "amplitudes":      csi_data.get("amplitudes", []),
         "people_count":    faces_count,
+        "faces_count":     faces_count,
         "subcarrier_count": len(csi_data.get("amplitudes", [])),
     }
 

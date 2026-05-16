@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import Header from '@/components/Header';
 import LiveVideoStream from '@/components/LiveVideoStream';
-import CSIChart from '@/components/CSIChart';
 
 export default function Home() {
   const [faceCount, setFaceCount] = useState(0);
@@ -19,7 +18,7 @@ export default function Home() {
               <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <h2 className="text-2xl font-bold text-white">Live Face Recognition</h2>
-                  <p className="text-sm text-gray-400">ESP32-CAM edge stream</p>
+                  <p className="text-sm text-gray-400">OpenCV camera at /dev/video1</p>
                 </div>
                 <div className="rounded-lg bg-blue-600 px-4 py-2 font-bold text-white">
                   {faceCount} face{faceCount === 1 ? '' : 's'}
@@ -50,8 +49,17 @@ export default function Home() {
             </div>
 
             <div className="rounded-xl border border-gray-700/50 bg-gray-800/50 p-4 shadow-xl">
-              <h3 className="mb-3 text-lg font-bold text-white">CSI Signal Monitor</h3>
-              <CSIChart />
+              <h3 className="mb-3 text-lg font-bold text-white">Runtime</h3>
+              <div className="space-y-3 text-sm">
+                <div className="rounded-lg bg-gray-900/60 p-3">
+                  <div className="font-medium text-white">Backend owns the camera</div>
+                  <div className="text-gray-400">The FastAPI backend reads /dev/video1 directly.</div>
+                </div>
+                <div className="rounded-lg bg-gray-900/60 p-3">
+                  <div className="font-medium text-white">Register in browser</div>
+                  <div className="text-gray-400">Samples are collected from the live camera feed.</div>
+                </div>
+              </div>
             </div>
           </aside>
         </div>

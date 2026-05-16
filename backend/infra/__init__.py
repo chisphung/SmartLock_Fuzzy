@@ -1,1 +1,1 @@
-# edge_side/infra – ESP32 WebSocket server with face detection pipeline
+"""Fuzzy logic support for the SmartLock backend."""

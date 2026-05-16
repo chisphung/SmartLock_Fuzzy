@@ -1,15 +1,3 @@
-from .count_people import (
-    CountPeopleRequest,
-    CountPeopleResponse,
-    CountPeopleFromImageRequest,
-    Detection,
-    EdgeCountRequest,
-)
+"""Schema package for SmartLock API."""
 
-__all__ = [
-    "CountPeopleRequest",
-    "CountPeopleResponse",
-    "CountPeopleFromImageRequest",
-    "Detection",
-    "EdgeCountRequest",
-]
+__all__: list[str] = []

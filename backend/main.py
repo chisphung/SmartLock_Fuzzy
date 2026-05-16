@@ -1,17 +1,24 @@
 import os
 import sys
 
-# Add parent directory to path to access infra module
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
-from routers import count_people, csi, get_camera
+from routers import get_camera
+from services.local_camera import camera_worker
+
+
+class RegisterStartRequest(BaseModel):
+    name: str = Field(..., min_length=1)
+    samples_required: int = Field(default=30, ge=5, le=80)
+
 
 app = FastAPI(
-    title="Face Recognition Smart Lock API",
-    description="API for live face recognition, smart-lock decisions, legacy YOLO counting, and CSI data",
+    title="SmartLock Face API",
+    description="Local OpenCV camera stream, face registration, recognition, and fuzzy lock decisions",
     version="1.0.0",
 )
 
@@ -23,36 +30,56 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(count_people.router, prefix="/api/v1", tags=["people-counting"])
-app.include_router(csi.router, prefix="/api/v1/csi", tags=["csi"])
-app.include_router(get_camera.router, prefix="/api/v1", tags=["face-camera"])
+app.include_router(get_camera.router, prefix="/api/v1", tags=["camera"])
+
+
+@app.on_event("startup")
+async def startup_event():
+    camera_worker.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    camera_worker.stop()
 
 
 @app.get("/", tags=["root"])
 async def root():
-    """
-    Root endpoint with API information.
-    """
     return {
-        "message": "Face Recognition Smart Lock API",
-        "version": "1.0.0",
+        "message": "SmartLock Face API",
         "docs": "/docs",
         "health": "/health",
-        "camera": "/api/v1/camera/latest",
-        "legacy_count_people": "/api/v1/count",
-        "csi": "/api/v1/csi",
+        "camera_frame": "/api/v1/camera/frame",
+        "register": "/api/v1/register/start",
     }
 
 
 @app.get("/health", tags=["health"])
 async def health():
-    """
-    Simple health check endpoint.
-    """
-    return {"status": "healthy", "service": "face-recognition-smart-lock-api"}
+    return {"status": "healthy", "service": "smartlock-face-api"}
+
+
+@app.get("/camera/status", tags=["camera"])
+async def camera_status():
+    return camera_worker.status()
+
+
+@app.post("/api/v1/register/start", tags=["registration"])
+async def start_registration(request: RegisterStartRequest):
+    return camera_worker.start_registration(request.name, request.samples_required)
+
+
+@app.post("/api/v1/register/cancel", tags=["registration"])
+async def cancel_registration():
+    return camera_worker.cancel_registration()
+
+
+@app.get("/api/v1/register/status", tags=["registration"])
+async def registration_status():
+    return camera_worker.registration_status()
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False, log_level="info")

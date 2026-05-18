@@ -10,3 +10,8 @@ numpy>=1.24.0
 
 # Fuzzy logic
 pyfuzzylite>=8.0.0
+
+# Hardware (Raspberry Pi)
+RPi.GPIO>=0.7.0
+luma.oled>=3.12.0
+Pillow>=10.0.0

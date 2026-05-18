@@ -16,6 +16,7 @@ from routers.get_camera import update_latest_camera_result
 from services.face_detection import FaceDetection
 from services.fuzzy_logic import SmartLockFuzzyDecision
 from services.hardware_io import SmartLockHardware
+from services.oled_display import OLEDDisplay
 from services.registration import FaceRegistrationManager
 
 
@@ -49,7 +50,8 @@ class LocalCameraWorker:
         self.detector = FaceDetection(recognizer_path=self.recognizer_path)
         self.fuzzy = SmartLockFuzzyDecision()
         self.registrar = FaceRegistrationManager(self.faces_dir, self.recognizer_path)
-        self.hardware = SmartLockHardware()
+        self.oled = OLEDDisplay()
+        self.hardware = SmartLockHardware(oled=self.oled)
         self.hardware.on_unlock = self._on_hardware_unlock
         self.hardware.on_keypad_event = self._on_keypad_event
 
@@ -75,6 +77,11 @@ class LocalCameraWorker:
             return
 
         try:
+            self.oled.start()
+        except Exception as exc:
+            print(f"[Camera] OLED init failed (non-fatal): {exc}")
+
+        try:
             self.hardware.start()
         except Exception as exc:
             print(f"[Camera] Hardware init failed (non-fatal): {exc}")
@@ -95,6 +102,11 @@ class LocalCameraWorker:
             self.hardware.stop()
         except Exception as exc:
             print(f"[Camera] Hardware cleanup error: {exc}")
+
+        try:
+            self.oled.stop()
+        except Exception as exc:
+            print(f"[Camera] OLED cleanup error: {exc}")
 
         self._set_status(running=False)
 
@@ -155,11 +167,23 @@ class LocalCameraWorker:
                     and fuzzy_result
                     and fuzzy_result.get("action") == "unlock"
                 ):
+                    self.oled.show_access_granted("face")
                     threading.Thread(
                         target=self.hardware.unlock_door,
                         args=("face",),
                         daemon=True,
                     ).start()
+                elif (
+                    not keypad_active
+                    and fuzzy_result
+                    and result["detections"]
+                ):
+                    det = result["detections"][0]
+                    self.oled.show_face_detected(
+                        det.get("name", "Unknown"),
+                        fuzzy_result.get("action", "deny"),
+                        fuzzy_result.get("security_risk", 1.0),
+                    )
 
                 registration_event = self.registrar.process_frame(frame, self.detector)
                 if registration_event and registration_event.get("type") == "registration_training":
@@ -167,12 +191,19 @@ class LocalCameraWorker:
                         summary = self.registrar.train_model()
                         self.detector.reload_recognizer(self.recognizer_path)
                         registration_event = summary
+                        self.oled.show_message("Registered!", summary.get("message", ""))
                     except Exception as exc:
                         registration_event = {
                             "type": "registration_error",
                             "status": "error",
                             "message": str(exc),
                         }
+                elif registration_event and registration_event.get("type") == "registration_progress":
+                    self.oled.show_registration(
+                        registration_event.get("name", ""),
+                        registration_event.get("accepted", 0),
+                        registration_event.get("required", 30),
+                    )
 
                 annotated = self._draw_status(
                     result["annotated_image"],

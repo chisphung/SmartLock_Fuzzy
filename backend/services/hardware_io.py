@@ -23,6 +23,8 @@ from typing import Callable
 
 import RPi.GPIO as GPIO
 
+from services.oled_display import OLEDDisplay
+
 logger = logging.getLogger("HardwareIO")
 
 _KEYMAP: list[list[str]] = [
@@ -73,10 +75,12 @@ class SmartLockHardware:
         row_pins: list[int] | None = None,
         col_pins: list[int] | None = None,
         servo_pin: int = _DEFAULT_SERVO_PIN,
+        oled: OLEDDisplay | None = None,
     ) -> None:
         self.ROW_PINS = row_pins or list(_DEFAULT_ROW_PINS)
         self.COL_PINS = col_pins or list(_DEFAULT_COL_PINS)
         self.SERVO_PIN = servo_pin
+        self._oled = oled
 
         self._password_hash = _hash_pin(default_password)
 
@@ -181,6 +185,8 @@ class SmartLockHardware:
             if pressed_key == "*":
                 self._key_buffer.clear()
                 self._emit_event("buffer_cleared", "Buffer cleared by user")
+                if self._oled:
+                    self._oled.show_idle()
                 return
 
             if pressed_key == "#":
@@ -201,6 +207,8 @@ class SmartLockHardware:
                 f"Digit entered ({len(self._key_buffer)}/{_PASSWORD_LENGTH})",
                 extra={"buffer_length": len(self._key_buffer), "remaining": remaining},
             )
+            if self._oled:
+                self._oled.show_enter_pin(len(self._key_buffer), _PASSWORD_LENGTH)
 
             if len(self._key_buffer) >= _PASSWORD_LENGTH:
                 self._submit_password()
@@ -248,6 +256,8 @@ class SmartLockHardware:
                 extra={"lockout_remaining": remaining},
             )
             logger.warning(f"[Keypad] Lockout active – {remaining}s remaining.")
+            if self._oled:
+                self._oled.show_lockout(remaining)
             return
 
         if len(entered) != _PASSWORD_LENGTH:
@@ -263,6 +273,8 @@ class SmartLockHardware:
             self._failed_attempts = 0
             logger.info("[Keypad] Correct password – unlocking door.")
             self._emit_event("password_correct", "Correct password – door unlocking")
+            if self._oled:
+                self._oled.show_access_granted("keypad")
             threading.Thread(
                 target=self.unlock_door,
                 args=("keypad",),
@@ -284,6 +296,8 @@ class SmartLockHardware:
                     f"Too many failed attempts – locked for {int(self._LOCKOUT_SECONDS)}s",
                     extra={"lockout_seconds": self._LOCKOUT_SECONDS},
                 )
+                if self._oled:
+                    self._oled.show_lockout(int(self._LOCKOUT_SECONDS))
             else:
                 self._emit_event(
                     "password_wrong",
@@ -293,6 +307,8 @@ class SmartLockHardware:
                         "remaining_attempts": remaining_attempts,
                     },
                 )
+                if self._oled:
+                    self._oled.show_access_denied(f"Wrong PIN ({remaining_attempts} left)")
 
     def unlock_door(self, source: str = "unknown") -> None:
         """Actuate the servo to unlock, wait, then re-lock."""
@@ -316,6 +332,9 @@ class SmartLockHardware:
                 except Exception as exc:
                     logger.error(f"[Hardware] on_unlock callback error: {exc}")
 
+            if self._oled:
+                self._oled.show_door_open(int(self.unlock_duration))
+
             time.sleep(self.unlock_duration)
 
             logger.info("[Hardware] Locking door.")
@@ -323,6 +342,9 @@ class SmartLockHardware:
                 self._servo_pwm.ChangeDutyCycle(_SERVO_LOCK_DUTY)
                 time.sleep(0.5)
                 self._servo_pwm.ChangeDutyCycle(0)
+
+            if self._oled:
+                self._oled.show_idle()
 
         finally:
             self._door_lock.release()

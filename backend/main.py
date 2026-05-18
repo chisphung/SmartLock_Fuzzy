@@ -16,6 +16,11 @@ class RegisterStartRequest(BaseModel):
     samples_required: int = Field(default=30, ge=5, le=80)
 
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=6, max_length=6)
+
+
 app = FastAPI(
     title="SmartLock Face API",
     description="Local OpenCV camera stream, face registration, recognition, and fuzzy lock decisions",
@@ -77,6 +82,18 @@ async def cancel_registration():
 @app.get("/api/v1/register/status", tags=["registration"])
 async def registration_status():
     return camera_worker.registration_status()
+
+
+@app.post("/api/v1/keypad/password", tags=["keypad"])
+async def change_keypad_password(request: PasswordChangeRequest):
+    return camera_worker.hardware.set_password(
+        request.current_password, request.new_password
+    )
+
+
+@app.get("/api/v1/keypad/status", tags=["keypad"])
+async def keypad_status():
+    return camera_worker.hardware.status()
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ import cv2
 from routers.get_camera import update_latest_camera_result
 from services.face_detection import FaceDetection
 from services.fuzzy_logic import SmartLockFuzzyDecision
+from services.hardware_io import SmartLockHardware
 from services.registration import FaceRegistrationManager
 
 
@@ -48,6 +49,9 @@ class LocalCameraWorker:
         self.detector = FaceDetection(recognizer_path=self.recognizer_path)
         self.fuzzy = SmartLockFuzzyDecision()
         self.registrar = FaceRegistrationManager(self.faces_dir, self.recognizer_path)
+        self.hardware = SmartLockHardware()
+        self.hardware.on_unlock = self._on_hardware_unlock
+        self.hardware.on_keypad_event = self._on_keypad_event
 
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -70,6 +74,11 @@ class LocalCameraWorker:
         if self._thread and self._thread.is_alive():
             return
 
+        try:
+            self.hardware.start()
+        except Exception as exc:
+            print(f"[Camera] Hardware init failed (non-fatal): {exc}")
+
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -81,12 +90,19 @@ class LocalCameraWorker:
         if self._camera:
             self._camera.release()
             self._camera = None
+
+        try:
+            self.hardware.stop()
+        except Exception as exc:
+            print(f"[Camera] Hardware cleanup error: {exc}")
+
         self._set_status(running=False)
 
     def status(self) -> dict:
         with self._status_lock:
             status = dict(self._status)
         status["registration"] = self.registrar.status()
+        status["hardware"] = self.hardware.status()
         return status
 
     def start_registration(self, name: str, samples_required: int = 30) -> dict:
@@ -132,6 +148,19 @@ class LocalCameraWorker:
                 fuzzy_result = self.fuzzy.evaluate_detection(
                     result["detections"][0] if result["detections"] else None
                 )
+
+                keypad_active = self.hardware.is_keypad_active
+                if (
+                    not keypad_active
+                    and fuzzy_result
+                    and fuzzy_result.get("action") == "unlock"
+                ):
+                    threading.Thread(
+                        target=self.hardware.unlock_door,
+                        args=("face",),
+                        daemon=True,
+                    ).start()
+
                 registration_event = self.registrar.process_frame(frame, self.detector)
                 if registration_event and registration_event.get("type") == "registration_training":
                     try:
@@ -225,6 +254,17 @@ class LocalCameraWorker:
     def _set_status(self, **updates) -> None:
         with self._status_lock:
             self._status.update(updates)
+
+
+    def _on_hardware_unlock(self, source: str, timestamp: float) -> None:
+        """Called by SmartLockHardware when the door is unlocked."""
+        print(f"[Camera] Door unlocked by {source} at {timestamp:.0f}")
+
+    def _on_keypad_event(self, event: dict) -> None:
+        """Called by SmartLockHardware on any keypad event."""
+        etype = event.get("type", "")
+        msg = event.get("message", "")
+        print(f"[Keypad] {etype}: {msg}")
 
 
 camera_worker = LocalCameraWorker()

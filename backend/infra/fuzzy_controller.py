@@ -78,9 +78,9 @@ class FuzzySecurityController:
                     maximum=100.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("LOW",    0.0,  0.0,  25.0, 45.0),
+                        fl.Trapezoid("LOW",    -1.0, 0.0,  25.0, 45.0),
                         fl.Triangle( "MEDIUM", 30.0, 50.0, 70.0),
-                        fl.Trapezoid("HIGH",   55.0, 75.0, 100.0, 100.0),
+                        fl.Trapezoid("HIGH",   55.0, 75.0, 100.0, 101.0),
                     ],
                 ),
                 # ── Antecedent 2: Illumination ──────────────────────
@@ -91,9 +91,9 @@ class FuzzySecurityController:
                     maximum=255.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("DARK",   0.0,   0.0,  50.0,  90.0),
+                        fl.Trapezoid("DARK",   -1.0,  0.0,  50.0,  90.0),
                         fl.Triangle( "NORMAL", 60.0, 128.0, 195.0),
-                        fl.Trapezoid("BRIGHT", 165.0, 210.0, 255.0, 255.0),
+                        fl.Trapezoid("BRIGHT", 165.0, 210.0, 255.0, 256.0),
                     ],
                 ),
                 # ── Antecedent 3: Facial Angle ──────────────────────
@@ -104,8 +104,8 @@ class FuzzySecurityController:
                     maximum=90.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("FRONTAL",  0.0,  0.0, 15.0, 35.0),
-                        fl.Trapezoid("MARGINAL", 20.0, 40.0, 90.0, 90.0),
+                        fl.Trapezoid("FRONTAL",  -1.0, 0.0, 15.0, 35.0),
+                        fl.Trapezoid("MARGINAL", 20.0, 40.0, 90.0, 91.0),
                     ],
                 ),
             ],
@@ -121,9 +121,9 @@ class FuzzySecurityController:
                     aggregation=fl.Maximum(),
                     defuzzifier=fl.Centroid(resolution=200),
                     terms=[
-                        fl.Triangle( "MINIMUM", 0.0,  0.0,  0.35),
+                        fl.Triangle( "MINIMUM", -0.01, 0.0,  0.35),
                         fl.Triangle( "AVERAGE", 0.25, 0.50, 0.75),
-                        fl.Trapezoid("MAXIMUM", 0.65, 0.85, 1.0, 1.0),
+                        fl.Trapezoid("MAXIMUM", 0.65, 0.85, 1.0, 1.01),
                     ],
                 ),
             ],

@@ -7,8 +7,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from contextlib import asynccontextmanager
+
 from routers import get_camera
 from services.local_camera import camera_worker
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup logic
+    camera_worker.start()
+    yield
+    # Shutdown logic
+    camera_worker.stop()
 
 
 class RegisterStartRequest(BaseModel):
@@ -25,6 +36,7 @@ app = FastAPI(
     title="SmartLock Face API",
     description="Local OpenCV camera stream, face registration, recognition, and fuzzy lock decisions",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -36,16 +48,6 @@ app.add_middleware(
 )
 
 app.include_router(get_camera.router, prefix="/api/v1", tags=["camera"])
-
-
-@app.on_event("startup")
-async def startup_event():
-    camera_worker.start()
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    camera_worker.stop()
 
 
 @app.get("/", tags=["root"])

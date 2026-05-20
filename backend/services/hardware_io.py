@@ -128,6 +128,10 @@ class SmartLockHardware:
         self._servo_pwm.ChangeDutyCycle(0)
 
         for col_pin in self.COL_PINS:
+            try:
+                GPIO.remove_event_detect(col_pin)
+            except Exception:
+                pass
             GPIO.add_event_detect(
                 col_pin,
                 GPIO.RISING,

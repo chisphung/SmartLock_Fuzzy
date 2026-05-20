@@ -1,7 +1,7 @@
 """
-oled_display.py – SSD1306 OLED I2C display controller for SmartLock.
+oled_display.py – SSD1306 OLED SPI display controller for SmartLock.
 
-Hardware: SSD1306 128x64 OLED via I2C (default address 0x3C).
+Hardware: SSD1306 128x64 OLED via SPI.
 Library:  luma.oled + Pillow for rendering.
 
 Install:
@@ -15,17 +15,17 @@ import threading
 import time
 
 from PIL import Image, ImageDraw, ImageFont
-# pyrefly: ignore [missing-import]
-from luma.core.interface.serial import i2c
-# pyrefly: ignore [missing-import]
+from luma.core.interface.serial import spi
 from luma.oled.device import ssd1306
 
 logger = logging.getLogger("OLEDDisplay")
 
 _WIDTH = 128
 _HEIGHT = 64
-_I2C_PORT = 1
-_I2C_ADDRESS = 0x3C
+_SPI_PORT = 0
+_SPI_DEVICE = 0
+_GPIO_DC = 24
+_GPIO_RST = 25
 _DISPLAY_TIMEOUT = 30.0
 
 
@@ -34,12 +34,16 @@ class OLEDDisplay:
 
     def __init__(
         self,
-        i2c_port: int = _I2C_PORT,
-        i2c_address: int = _I2C_ADDRESS,
+        spi_port: int = _SPI_PORT,
+        spi_device: int = _SPI_DEVICE,
+        gpio_dc: int = _GPIO_DC,
+        gpio_rst: int = _GPIO_RST,
     ) -> None:
         self._device: ssd1306 | None = None
-        self._i2c_port = i2c_port
-        self._i2c_address = i2c_address
+        self._spi_port = spi_port
+        self._spi_device = spi_device
+        self._gpio_dc = gpio_dc
+        self._gpio_rst = gpio_rst
         self._lock = threading.Lock()
         self._running = False
 
@@ -57,7 +61,12 @@ class OLEDDisplay:
         if self._running:
             return
         try:
-            serial = i2c(port=self._i2c_port, address=self._i2c_address)
+            serial = spi(
+                port=self._spi_port,
+                device=self._spi_device,
+                gpio_DC=self._gpio_dc,
+                gpio_RST=self._gpio_rst,
+            )
             self._device = ssd1306(serial, width=_WIDTH, height=_HEIGHT)
             self._running = True
             logger.info("[OLED] Display initialized.")

@@ -161,21 +161,26 @@ class SmartLockHardware:
 
     def _col_interrupt(self, col_pin: int) -> None:
         """ISR callback – RISING edge on a column pin."""
+        print(f"[Keypad DEBUG] Raw interrupt event received on pin {col_pin}")
         if not self._running:
+            print("[Keypad DEBUG] Interrupt ignored because self._running is False")
             return
 
         now = time.time()
 
         if now - self._last_interrupt_time < _DEBOUNCE_THRESHOLD:
+            print(f"[Keypad DEBUG] Interrupt on pin {col_pin} throttled by debounce (dt={now - self._last_interrupt_time:.3f}s)")
             return
 
         with self._keypad_lock:
             pressed_key = self._scan_key(col_pin)
             if pressed_key is None:
+                print(f"[Keypad DEBUG] Interrupt on pin {col_pin} resulted in NO pressed key detected during scan")
                 return
 
             self._last_interrupt_time = now
             logger.info(f"[Keypad] Key pressed: '{pressed_key}'")
+            print(f"[Keypad DEBUG] Key detected: '{pressed_key}'")
 
             if (
                 self._key_buffer
@@ -225,8 +230,10 @@ class SmartLockHardware:
                 col_idx = idx
                 break
         if col_idx is None:
+            print(f"[Keypad DEBUG] Error: col_pin {col_pin} not found in COL_PINS list")
             return None
 
+        print(f"[Keypad DEBUG] Starting scan. Column pin: {col_pin} (index: {col_idx})")
         for row_pin in self.ROW_PINS:
             GPIO.output(row_pin, GPIO.LOW)
 
@@ -234,8 +241,11 @@ class SmartLockHardware:
         for row_idx, row_pin in enumerate(self.ROW_PINS):
             GPIO.output(row_pin, GPIO.HIGH)
             time.sleep(0.005)
-            if GPIO.input(col_pin):
+            val = GPIO.input(col_pin)
+            print(f"[Keypad DEBUG] Row {row_idx} (pin {row_pin}) -> HIGH. Read col {col_pin} = {val}")
+            if val:
                 pressed_key = _KEYMAP[row_idx][col_idx]
+                print(f"[Keypad DEBUG] Key detected at Row {row_idx}, Col {col_idx}: '{pressed_key}'")
                 GPIO.output(row_pin, GPIO.LOW)
                 break
             GPIO.output(row_pin, GPIO.LOW)
@@ -243,6 +253,7 @@ class SmartLockHardware:
         for row_pin in self.ROW_PINS:
             GPIO.output(row_pin, GPIO.HIGH)
 
+        print(f"[Keypad DEBUG] Scan finished. Result: {pressed_key}")
         return pressed_key
 
     def _submit_password(self) -> None:

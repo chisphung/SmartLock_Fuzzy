@@ -5,7 +5,7 @@ Tiny local camera smoke test.
 
 import cv2
 
-CAMERA_INDEX = "/dev/video1"
+CAMERA_INDEX = "/dev/video0"
 
 
 def main() -> None:

@@ -75,12 +75,12 @@ class FuzzySecurityController:
                 fl.InputVariable(
                     name="model_confidence",
                     minimum=0.0,
-                    maximum=100.0,
+                    maximum=85.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("LOW",    -1.0, 0.0,  25.0, 45.0),
-                        fl.Triangle( "MEDIUM", 30.0, 50.0, 70.0),
-                        fl.Trapezoid("HIGH",   55.0, 75.0, 100.0, 101.0),
+                        fl.Gaussian("LOW", 0.0, 17.0),
+                        fl.Gaussian("MEDIUM", 42.5, 10.0),
+                        fl.Gaussian("HIGH", 85.0, 17.0),
                     ],
                 ),
                 # ── Antecedent 2: Illumination ──────────────────────
@@ -91,9 +91,9 @@ class FuzzySecurityController:
                     maximum=255.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("DARK",   -1.0,  0.0,  50.0,  90.0),
-                        fl.Triangle( "NORMAL", 60.0, 128.0, 195.0),
-                        fl.Trapezoid("BRIGHT", 165.0, 210.0, 255.0, 256.0),
+                        fl.Gaussian("DARK", 0.0, 40.0),
+                        fl.Gaussian("NORMAL", 128.0, 45.0),
+                        fl.Gaussian("BRIGHT", 255.0, 40.0),
                     ],
                 ),
                 # ── Antecedent 3: Facial Angle ──────────────────────
@@ -104,8 +104,8 @@ class FuzzySecurityController:
                     maximum=90.0,
                     lock_range=True,
                     terms=[
-                        fl.Trapezoid("FRONTAL",  -1.0, 0.0, 15.0, 35.0),
-                        fl.Trapezoid("MARGINAL", 20.0, 40.0, 90.0, 91.0),
+                        fl.Gaussian("FRONTAL", 0.0, 20.0),
+                        fl.Gaussian("MARGINAL", 90.0, 40.0),
                     ],
                 ),
             ],
@@ -121,9 +121,9 @@ class FuzzySecurityController:
                     aggregation=fl.Maximum(),
                     defuzzifier=fl.Centroid(resolution=200),
                     terms=[
-                        fl.Triangle( "MINIMUM", -0.01, 0.0,  0.35),
-                        fl.Triangle( "AVERAGE", 0.25, 0.50, 0.75),
-                        fl.Trapezoid("MAXIMUM", 0.65, 0.85, 1.0, 1.01),
+                        fl.Gaussian("MINIMUM", 0.0, 0.1),
+                        fl.Gaussian("AVERAGE", 0.5, 0.1),
+                        fl.Gaussian("MAXIMUM", 1.0, 0.08),
                     ],
                 ),
             ],
@@ -135,38 +135,84 @@ class FuzzySecurityController:
                     implication=fl.Minimum(),
                     activation=fl.General(),
                     rules=[
-                        # R1: HIGH confidence + NORMAL light + FRONTAL → MINIMUM risk
+                        # LOW confidence -> MAXIMUM risk
+                        fl.Rule.create(
+                            "if model_confidence is LOW "
+                            "then security_risk is MAXIMUM"
+                        ),
+                        # HIGH confidence rules
                         fl.Rule.create(
                             "if model_confidence is HIGH "
                             "and illumination is NORMAL "
                             "and facial_angle is FRONTAL "
                             "then security_risk is MINIMUM"
                         ),
-                        # R2: HIGH confidence + DARK light + MARGINAL angle → AVERAGE risk
+                        fl.Rule.create(
+                            "if model_confidence is HIGH "
+                            "and illumination is NORMAL "
+                            "and facial_angle is MARGINAL "
+                            "then security_risk is AVERAGE"
+                        ),
+                        fl.Rule.create(
+                            "if model_confidence is HIGH "
+                            "and illumination is DARK "
+                            "and facial_angle is FRONTAL "
+                            "then security_risk is AVERAGE"
+                        ),
                         fl.Rule.create(
                             "if model_confidence is HIGH "
                             "and illumination is DARK "
                             "and facial_angle is MARGINAL "
                             "then security_risk is AVERAGE"
                         ),
-                        # R3: MEDIUM confidence + BRIGHT light + MARGINAL → AVERAGE risk
                         fl.Rule.create(
-                            "if model_confidence is MEDIUM "
+                            "if model_confidence is HIGH "
+                            "and illumination is BRIGHT "
+                            "and facial_angle is FRONTAL "
+                            "then security_risk is AVERAGE"
+                        ),
+                        fl.Rule.create(
+                            "if model_confidence is HIGH "
                             "and illumination is BRIGHT "
                             "and facial_angle is MARGINAL "
                             "then security_risk is AVERAGE"
                         ),
-                        # R4: MEDIUM confidence + DARK + FRONTAL → MAXIMUM risk
+                        # MEDIUM confidence rules
+                        fl.Rule.create(
+                            "if model_confidence is MEDIUM "
+                            "and illumination is NORMAL "
+                            "and facial_angle is FRONTAL "
+                            "then security_risk is AVERAGE"
+                        ),
+                        fl.Rule.create(
+                            "if model_confidence is MEDIUM "
+                            "and illumination is NORMAL "
+                            "and facial_angle is MARGINAL "
+                            "then security_risk is MAXIMUM"
+                        ),
                         fl.Rule.create(
                             "if model_confidence is MEDIUM "
                             "and illumination is DARK "
                             "and facial_angle is FRONTAL "
                             "then security_risk is MAXIMUM"
                         ),
-                        # R5: LOW confidence (any illumination, any angle) → MAXIMUM risk
                         fl.Rule.create(
-                            "if model_confidence is LOW "
+                            "if model_confidence is MEDIUM "
+                            "and illumination is DARK "
+                            "and facial_angle is MARGINAL "
                             "then security_risk is MAXIMUM"
+                        ),
+                        fl.Rule.create(
+                            "if model_confidence is MEDIUM "
+                            "and illumination is BRIGHT "
+                            "and facial_angle is FRONTAL "
+                            "then security_risk is AVERAGE"
+                        ),
+                        fl.Rule.create(
+                            "if model_confidence is MEDIUM "
+                            "and illumination is BRIGHT "
+                            "and facial_angle is MARGINAL "
+                            "then security_risk is AVERAGE"
                         ),
                     ],
                 ),
@@ -203,6 +249,26 @@ class FuzzySecurityController:
             details        – human-readable description of the action
             inputs         – dict of the three input values used
         """
+        print(f"[Fuzzy DEBUG] Evaluating Inputs:")
+        print(f"  - confidence   : {confidence:.2f}")
+        for term in self._v_confidence.terms:
+            try:
+                print(f"    * membership {term.name:<8}: {term.membership(confidence):.4f}")
+            except Exception as e:
+                print(f"    * membership {term.name:<8}: error ({e})")
+        print(f"  - illumination : {illumination:.2f}")
+        for term in self._v_illumination.terms:
+            try:
+                print(f"    * membership {term.name:<8}: {term.membership(illumination):.4f}")
+            except Exception as e:
+                print(f"    * membership {term.name:<8}: error ({e})")
+        print(f"  - facial_angle : {facial_angle:.2f}")
+        for term in self._v_angle.terms:
+            try:
+                print(f"    * membership {term.name:<8}: {term.membership(facial_angle):.4f}")
+            except Exception as e:
+                print(f"    * membership {term.name:<8}: error ({e})")
+
         self._v_confidence.value   = float(confidence)
         self._v_illumination.value = float(illumination)
         self._v_angle.value        = float(facial_angle)
@@ -211,6 +277,15 @@ class FuzzySecurityController:
 
         risk = float(self._v_risk.value)
         action, details = _risk_to_action(risk)
+
+        print(f"[Fuzzy DEBUG] Inference Output:")
+        print(f"  - security_risk: {risk:.4f}")
+        for term in self._v_risk.terms:
+            try:
+                print(f"    * membership {term.name:<8}: {term.membership(risk):.4f}")
+            except Exception as e:
+                print(f"    * membership {term.name:<8}: error ({e})")
+        print(f"  - action       : {action} ({details})")
 
         return {
             "security_risk": round(risk, 4),

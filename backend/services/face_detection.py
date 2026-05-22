@@ -77,10 +77,21 @@ class FaceDetection:
 
         roi = cv2.resize(gray[y : y + h, x : x + w], (100, 100))
         label_id, confidence = self._recognizer.predict(roi)
+
+        model_confidence = max(0.0, min(100.0, 100.0 - confidence))
+
+        print(f"[LBPH DEBUG] Recognition Predict Details:")
+        print(f"  - Predicted label ID : {label_id}")
+        print(f"  - Raw LBPH distance  : {confidence:.2f}")
+        print(f"  - Computed confidence: {model_confidence:.2f}")
+        print(f"  - Threshold (max dist): {self.RECOGNITION_THRESH:.2f}")
+
         if confidence < self.RECOGNITION_THRESH:
             name = self._label_map.get(label_id, f"ID-{label_id}")
+            print(f"  - Result             : MATCHED (Name: '{name}')")
         else:
             name = self.UNKNOWN_LABEL
+            print(f"  - Result             : UNKNOWN (Exceeds threshold)")
         return name, float(confidence)
 
     @staticmethod

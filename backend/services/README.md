@@ -1,239 +1,248 @@
-# Tài Liệu Kỹ Thuật Chi Tiết: Các Dịch Vụ Backend (SmartLock Fuzzy)
+# Detailed Technical Documentation: Backend Services (SmartLock Fuzzy)
 
-Tài liệu này mô tả chi tiết kiến trúc, thuật toán và cách thức hoạt động của các dịch vụ nằm trong thư mục [backend/services](file:///d:/SmartLock_Fuzzy/backend/services) thuộc hệ thống khóa thông minh SmartLock Fuzzy.
+This document provides a detailed description of the architecture, algorithms, and operations of the services located in the [backend/services](/SmartLock_Fuzzy/backend/services) directory of the SmartLock Fuzzy smart lock system.
 
 ---
 
-## 1. Tổng Quan Kiến Trúc Hệ Thống (System Overview)
+## 1. System Overview
 
-Hệ thống backend của SmartLock Fuzzy được xây dựng trên nền tảng **FastAPI**, tích hợp xử lý ảnh thời gian thực (**OpenCV**), hệ thống quyết định mờ (**Fuzzy Logic Engine**) và giao tiếp phần cứng (**RPi.GPIO** & **luma.oled**).
+The backend system of SmartLock Fuzzy is built on top of **FastAPI**, integrated with real-time image processing (**OpenCV**), a fuzzy decision system (**Fuzzy Logic Engine**), and hardware communication (**RPi.GPIO** & **luma.oled**).
 
-Sơ đồ luồng dữ liệu và điều khiển giữa các thành phần dịch vụ chính:
+Data and control flow diagram between the main service components:
 
 ```mermaid
 graph TD
-    %% Định nghĩa các node chính
-    Cam[Camera Vật Lý] -->|Khung ảnh raw| Worker[LocalCameraWorker]
-    Worker -->|Phân tích ảnh| Det[FaceDetection]
-    Worker -->|Quyết định mờ| Fuzzy[SmartLockFuzzyDecision]
-    Worker -->|Xử lý đăng ký| Reg[FaceRegistrationManager]
-    Worker -->|Cập nhật giao diện| OLED[OLEDDisplay]
+    %% Main nodes definition
+    Cam[Physical Camera] -->|Raw Image Frame| Worker[LocalCameraWorker]
+    Worker -->|Image Analysis| Det[FaceDetection]
+    Worker -->|Fuzzy Decision| Fuzzy[SmartLockFuzzyDecision]
+    Worker -->|Registration Processing| Reg[FaceRegistrationManager]
+    Worker -->|Interface Update| OLED[OLEDDisplay]
     
-    %% Tương tác phần cứng và người dùng
-    Keypad[Bàn Phím 4x4] -->|Ngắt GPIO RISING| HW[SmartLockHardware]
-    HW -->|Mở khóa| Servo[Khóa Servo]
-    HW -->|Đọc trạng thái| Worker
-    HW -->|Ghi log/Màn hình| OLED
+    %% Hardware and user interaction
+    Keypad[4x4 Keypad] -->|GPIO RISING Interrupt| HW[SmartLockHardware]
+    HW -->|Unlock| Servo[Servo Lock]
+    HW -->|Read Status| Worker
+    HW -->|Log/Display| OLED
     
     %% API
-    Worker -->|Đẩy khung ảnh & metadata| API[FastAPI router / get_camera]
+    Worker -->|Push Image Frame & Metadata| API[FastAPI router / get_camera]
 ```
 
 ---
 
-## 2. Chi Tiết Từng Dịch Vụ (Module Analysis)
+## 2. Module Analysis
 
-### 2.1 [local_camera.py](file:///d:/SmartLock_Fuzzy/backend/services/local_camera.py) (Bộ Điều Phối Trung Tâm)
-Dịch vụ này quản lý lớp [LocalCameraWorker](file:///d:/SmartLock_Fuzzy/backend/services/local_camera.py#L35), chạy trong một tiến trình phụ (`Thread` ngầm) để liên tục bắt hình ảnh từ camera và điều phối các dịch vụ khác.
+### 2.1 [local_camera.py](file:///d:/SmartLock_Fuzzy/backend/services/local_camera.py) (Central Coordinator)
+This service manages the [LocalCameraWorker](file:///d:/SmartLock_Fuzzy/backend/services/local_camera.py#L35) class, running in a background thread to continuously capture frames from the camera and coordinate other services.
 
-*   **Vòng lặp chính (`_run`)**:
-    1.  Mở thiết bị camera qua OpenCV (`cv2.VideoCapture`). Hỗ trợ cấu hình qua môi trường như `CAMERA_INDEX` (ví dụ `/dev/video0`), tự động lật ảnh (`CAMERA_FLIP`).
-    2.  Chụp ảnh raw ở một tần số FPS định sẵn (ví dụ 10 FPS) để tiết kiệm CPU cho Raspberry Pi.
-    3.  Gửi khung ảnh sang dịch vụ [FaceDetection](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py#L15) để phát hiện khuôn mặt và nhận dạng danh tính.
-    4.  Nếu phát hiện mặt:
-        *   Gửi thông tin đặc trưng mặt sang [SmartLockFuzzyDecision](file:///d:/SmartLock_Fuzzy/backend/services/fuzzy_logic.py#L49) để đánh giá mức độ rủi ro an ninh.
-        *   Nếu kết quả mờ là `"unlock"` và người dùng không chạm vào bàn phím (tránh xung đột), hệ thống tự động kích hoạt mở cửa qua [SmartLockHardware.unlock_door](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py#L313) với nguồn kích hoạt là `"face"`.
-    5.  Nếu đang trong chế độ đăng ký người dùng:
-        *   Gửi khung ảnh sang [FaceRegistrationManager](file:///d:/SmartLock_Fuzzy/backend/services/registration.py#L19) để lưu mẫu khuôn mặt, sau đó hiển thị tiến trình trên OLED.
-    6.  Vẽ đè các thông tin trạng thái (Trạng thái khóa, độ rủi ro mờ, tiến trình đăng ký) lên khung ảnh (`_draw_status`).
-    7.  Mã hóa ảnh kết quả sang định dạng JPEG Base64 rồi đẩy vào bộ nhớ đệm của API qua hàm `update_latest_camera_result`.
+*   **Main Loop (`_run`)**:
+    1.  Opens the camera device using OpenCV (`cv2.VideoCapture`). Supports configuration via environment variables such as `CAMERA_INDEX` (e.g., `/dev/video0`) and automatic image flipping (`CAMERA_FLIP`).
+    2.  Captures raw frames at a predefined FPS (e.g., 10 FPS) to conserve Raspberry Pi CPU.
+    3.  Sends the frame to [FaceDetection](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py#L15) for face detection and identity recognition.
+    4.  If a face is detected:
+        *   Sends facial feature information to [SmartLockFuzzyDecision](file:///d:/SmartLock_Fuzzy/backend/services/fuzzy_logic.py#L49) to evaluate the security risk level.
+        *   If the fuzzy output is `"unlock"` and the user is not touching the keypad (to avoid conflict), the system automatically triggers door unlocking via [SmartLockHardware.unlock_door](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py#L313) with the trigger source set to `"face"`.
+    5.  If currently in user registration mode:
+        *   Sends the frame to [FaceRegistrationManager](file:///d:/SmartLock_Fuzzy/backend/services/registration.py#L19) to save face templates, then updates the registration progress on the OLED.
+    6.  Draws status overlays (lock state, fuzzy risk score, registration progress) onto the frame (`_draw_status`).
+    7.  Encodes the resulting image into JPEG Base64 format and pushes it to the API cache via the `update_latest_camera_result` function.
 
 ---
 
-### 2.2 [face_detection.py](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py) (Xử Lý Ảnh & Đo Lường)
-Cung cấp lớp [FaceDetection](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py#L15) chịu trách nhiệm:
+### 2.2 [face_detection.py](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py) (Image Processing & Feature Measurement)
+Provides the [FaceDetection](file:///d:/SmartLock_Fuzzy/backend/services/face_detection.py#L15) class, which is responsible for:
 
-#### A. Phát Hiện Khuôn Mặt (Detection)
-Sử dụng bộ phân loại thác **Haar Cascade** mặc định của OpenCV (`haarcascade_frontalface_default.xml`).
-*   Ảnh màu được chuyển sang ảnh xám để tăng tốc xử lý.
-*   Nếu có nhiều hơn một khuôn mặt xuất hiện trong khung hình, hệ thống sẽ tự động lọc và chỉ giữ lại khuôn mặt có **diện tích khung bao (Bounding Box) lớn nhất** (coi là người đứng gần camera nhất).
+#### A. Face Detection
+Uses OpenCV's default **Haar Cascade** classifier (`haarcascade_frontalface_default.xml`).
+*   Color images are converted to grayscale to accelerate processing.
+*   If multiple faces appear in the frame, the system automatically filters and retains only the face with the **largest bounding box area** (assumed to be the person closest to the camera).
 
-#### B. Nhận Dạng Danh Tính (Recognition)
-Sử dụng thuật toán **LBPH (Local Binary Patterns Histograms)** qua OpenCV Face module (`cv2.face.LBPHFaceRecognizer_create`).
-*   Hệ thống đọc file mô hình đã được huấn luyện sẵn tại `custom_models/smartlock_lbph_model.xml` kèm file nhãn ánh xạ dạng JSON (`.json`).
-*   Vùng khuôn mặt phát hiện được resize về kích thước chuẩn $100 \times 100$ pixel trước khi đưa vào hàm `predict`.
-*   Nếu khoảng cách (LBPH distance) nhỏ hơn ngưỡng `RECOGNITION_THRESH` (mặc định 80.0), hệ thống sẽ gán tên định danh tương ứng. Ngược lại, gán nhãn `"Unknown"`.
+#### B. Identity Recognition
+Uses the **LBPH (Local Binary Patterns Histograms)** algorithm via the OpenCV Face module (`cv2.face.LBPHFaceRecognizer_create`).
+*   The system loads the pre-trained model file at `custom_models/smartlock_lbph_model.xml` along with its associated JSON label map file (`.json`).
+*   The detected face region is resized to a standard size of $100 \times 100$ pixels before being passed to the `predict` function.
+*   If the LBPH distance is less than the `RECOGNITION_THRESH` threshold (defaulting to 80.0), the system assigns the corresponding identity name. Otherwise, it assigns the label `"Unknown"`.
 
-#### C. Ước Lượng Các Chỉ Số Vật Lý (Metadata Estimation)
-Đây là các tham số quan trọng đầu vào cho hệ thống quyết định mờ:
-1.  **Độ Chiếu Sáng (Illumination)**:
-    Được tính bằng độ sáng trung bình (Mean Grayscale) của vùng chứa khuôn mặt (ROI):
+#### C. Physical Metric Estimation
+These are key inputs for the fuzzy decision system:
+1.  **Illumination**:
+    Calculated as the mean grayscale value of the face region of interest (ROI):
     $$\text{Illumination} = \frac{1}{N} \sum_{i,j \in \text{ROI}} I(i, j)$$
-    Giá trị nằm trong khoảng $0$ (tối hoàn toàn) đến $255$ (quá sáng).
-2.  **Góc Nghiêng Mặt (Facial Angle)**:
-    Ước lượng độ lệch hướng mặt (yaw) dựa trên sự bất đối xứng ánh sáng giữa nửa bên trái và nửa bên phải của khuôn mặt:
-    *   Chia đôi chiều rộng khuôn mặt (ROI).
-    *   Tính độ sáng trung bình nửa trái ($\mu_L$) và nửa phải ($\mu_R$).
-    *   Tính độ bất đối xứng (asymmetry):
+    Values range from $0$ (completely dark) to $255$ (overexposed/extremely bright).
+2.  **Facial Angle**:
+    Estimates the head yaw angle based on the illumination asymmetry between the left and right halves of the face:
+    *   Splits the face width (ROI) in half.
+    *   Calculates the mean brightness of the left half ($\mu_L$) and right half ($\mu_R$).
+    *   Calculates asymmetry:
         $$\text{asymmetry} = \frac{|\mu_L - \mu_R|}{\mu_L + \mu_R}$$
-    *   Góc nghiêng được chuẩn hóa về thang độ từ $0^\circ$ (nhìn thẳng) đến $90^\circ$ (nhìn nghiêng góc hoàn toàn):
+    *   Normalizes the angle to a scale from $0^\circ$ (looking straight ahead) to $90^\circ$ (profile/side view):
         $$\text{Facial Angle} = \min(\text{asymmetry} \times 180.0, 90.0)$$
 
-#### D. Kiểm Tra Chất Lượng Ảnh Đăng Ký (`extract_registration_face`)
-Khi người dùng đăng ký khuôn mặt mới, hệ thống áp dụng các bộ lọc chất lượng nghiêm ngặt:
-*   **Kích thước**: Chiều rộng/cao tối thiểu phải đạt 32 pixel (đảm bảo không đứng quá xa).
-*   **Độ chiếu sáng**: Phải nằm trong khoảng an toàn $[35, 230]$ (tránh tối quá hoặc lóa sáng quá).
-*   **Góc nghiêng mặt**: Phải nhỏ hơn $40^\circ$ (đảm bảo khuôn mặt hướng thẳng vào camera).
-*   **Độ mờ (Blur Score)**: Sử dụng phương sai của bộ lọc Laplace (**Laplacian Variance**):
+#### D. Registration Quality Verification (`extract_registration_face`)
+When a user registers a new face, the system applies strict quality filters:
+*   **Size**: Minimum width/height must reach 32 pixels (ensures the user is not standing too far away).
+*   **Illumination**: Must fall within the safe range of $[35, 230]$ (avoids extreme darkness or glare).
+*   **Facial Angle**: Must be less than $40^\circ$ (ensures the user is facing directly towards the camera).
+*   **Blur Score**: Evaluated using the variance of the Laplacian operator (**Laplacian Variance**):
     $$\text{Blur Score} = \text{Variance}(\nabla^2 I_{roi})$$
-    Nếu giá trị này nhỏ hơn $20$, khung ảnh bị coi là quá mờ (out-of-focus hoặc chuyển động nhanh) và bị loại bỏ.
-*   Ảnh hợp lệ sẽ được chuẩn hóa lịch sử phân bố độ sáng (**Histogram Equalization**) bằng `cv2.equalizeHist` để tăng độ tương phản trước khi lưu xuống đĩa.
+    If this value is less than $20$, the frame is considered too blurry (out-of-focus or fast motion) and is discarded.
+*   Valid face images are contrast-enhanced using **Histogram Equalization** via `cv2.equalizeHist` before being saved to disk.
 
 ---
 
-### 2.3 [registration.py](file:///d:/SmartLock_Fuzzy/backend/services/registration.py) (Quản Lý Đăng Ký & Huấn Luyện)
-Quản lý luồng đăng ký trực tiếp và huấn luyện lại mô hình thông qua lớp [FaceRegistrationManager](file:///d:/SmartLock_Fuzzy/backend/services/registration.py#L19).
+### 2.3 [registration.py](file:///d:/SmartLock_Fuzzy/backend/services/registration.py) (Registration & Training Management)
+Manages the live registration flow and model retraining through the [FaceRegistrationManager](file:///d:/SmartLock_Fuzzy/backend/services/registration.py#L19) class.
 
-#### A. Cơ Chế Thu Thập Mẫu Tránh Trùng Lặp
-Để huấn luyện mô hình tốt, ảnh chụp cần đa dạng góc nhìn (người dùng nghiêng đầu nhẹ). Hệ thống kiểm soát việc này bằng cách:
-*   Áp dụng khoảng thời gian tối thiểu giữa các lần lấy mẫu (`min_sample_interval = 0.25` giây).
-*   So sánh độ tương đồng giữa khuôn mặt ở khung hình hiện tại và ảnh lấy mẫu gần nhất trước đó bằng sai biệt tuyệt đối trung bình (Mean Absolute Difference):
+#### A. Duplicate-Prevention Sample Collection Mechanism
+To train a robust model, the captured images need to cover diverse head angles (e.g., slight head tilting). The system controls this by:
+*   Enforcing a minimum interval between samples (`min_sample_interval = 0.25` seconds).
+*   Comparing the similarity between the current face frame and the last captured sample using the Mean Absolute Difference (MAD):
     $$\text{Similarity} = \frac{1}{N} \sum |I_{\text{current}} - I_{\text{last}}|$$
-    Nếu $\text{Similarity} < 1.5$, hệ thống coi như khuôn mặt chưa di chuyển và sẽ bỏ qua khung hình này kèm thông báo trên OLED: *"Slightly change your head position"* (Hãy dịch chuyển đầu nhẹ).
+    If $\text{Similarity} < 1.5$, the system assumes the user has not moved and skips the frame, displaying the OLED message: *"Slightly change your head position"*.
 
-#### B. Huấn Luyện Mô Hình (Training)
-Khi thu thập đủ số lượng mẫu yêu cầu (mặc định 30 mẫu, giới hạn từ 5 đến 80):
-1.  Hệ thống dừng thu thập và chuyển sang trạng thái `"training"`.
-2.  Đọc tất cả các thư mục con trong `registered_faces/` (mỗi thư mục đại diện cho một danh tính người dùng).
-3.  Chỉ lấy các thư mục có ít nhất 3 mẫu ảnh.
-4.  Cấp phát một ID số nguyên tự tăng cho mỗi danh tính, ánh xạ ID này với tên hiển thị (`display_name.txt`) và lưu thành file JSON.
-5.  Khởi tạo bộ huấn luyện LBPH với các tham số tối ưu:
-    *   `radius = 1`, `neighbors = 8`: Bán kính và số điểm lân cận tính mẫu nhị phân.
-    *   `grid_x = 8`, `grid_y = 8`: Chia ảnh thành lưới $8 \times 8$ vùng để trích xuất histogram cục bộ.
-6.  Gọi phương thức `train` và xuất file mô hình XML ghi đè vào `custom_models/smartlock_lbph_model.xml`.
-7.  Sau khi huấn luyện thành công, gửi tín hiệu để `LocalCameraWorker` nạp lại mô hình mới ngay lập tức mà không cần khởi động lại hệ thống.
+#### B. Model Training
+Once the requested number of samples is collected (default 30 samples, range 5 to 80):
+1.  The system halts capture and transitions to the `"training"` state.
+2.  Reads all subdirectories under `registered_faces/` (each directory represents a user identity).
+3.  Only includes directories containing at least 3 sample images.
+4.  Assigns an auto-incrementing integer ID to each identity, maps this ID to the display name (`display_name.txt`), and saves it as a JSON file.
+5.  Initializes the LBPH trainer with optimal parameters:
+    *   `radius = 1`, `neighbors = 8`: Radius and number of neighbors to compute binary patterns.
+    *   `grid_x = 8`, `grid_y = 8`: Divides the image into an $8 \times 8$ grid to extract local histograms.
+6.  Invokes the `train` method and saves the resulting model XML file, overwriting `custom_models/smartlock_lbph_model.xml`.
+7.  After successful training, sends a signal to `LocalCameraWorker` to hot-reload the new model immediately without restarting the system.
 
 ---
 
-### 2.4 [fuzzy_logic.py](file:///d:/SmartLock_Fuzzy/backend/services/fuzzy_logic.py) & [fuzzy_controller.py](file:///d:/SmartLock_Fuzzy/backend/backend/infra/fuzzy_controller.py) (Hệ Quyết Định Mờ)
-Sử dụng phương pháp suy luận mờ **Mamdani** thông qua thư viện `pyfuzzylite` để đưa ra các hành động an ninh dựa trên 3 biến đầu vào.
+### 2.4 [fuzzy_logic.py](file:///d:/SmartLock_Fuzzy/backend/services/fuzzy_logic.py) & [fuzzy_controller.py](file:///d:/SmartLock_Fuzzy/backend/infra/fuzzy_controller.py) (Fuzzy Decision Engine)
+Uses the **Mamdani** fuzzy inference method via the `pyfuzzylite` library to make security actions based on 3 input variables.
 
 ```text
-               +-------------------+
+                +-------------------+
 Confidence --->|                   |
 Illumination ->|  Mamdani Engine   |---> Security Risk ---> Action & Details
-Facial Angle ->|  (5 Fuzzy Rules)  |
-               +-------------------+
+Facial Angle ->|  (13 Fuzzy Rules) |
+                +-------------------+
 ```
 
-#### A. Định Nghĩa Tập Mờ Đầu Vào (Antecedents)
-1.  **Model Confidence (C)** $[0, 100]$: Được chuyển đổi từ khoảng cách LBPH ($100 - \text{distance}$).
-    *   `LOW`: Hình thang $[0.0, 0.0, 25.0, 45.0]$
-    *   `MEDIUM`: Hình tam giác $[30.0, 50.0, 70.0]$
-    *   `HIGH`: Hình thang $[55.0, 75.0, 100.0, 100.0]$
+#### A. Input Fuzzy Sets (Antecedents)
+Membership Functions for the input variables all use a Gaussian distribution of the form $\text{Gaussian}(\text{mean}, \text{stddev})$:
+1.  **Model Confidence (C)** $[0, 85]$: Converted from LBPH distance ($100 - \text{distance}$) and capped at 85 (the practical maximum level).
+    *   `LOW`: Gaussian $[0.0, 17.0]$
+    *   `MEDIUM`: Gaussian $[42.5, 10.0]$
+    *   `HIGH`: Gaussian $[85.0, 17.0]$
 2.  **Illumination (I)** $[0, 255]$:
-    *   `DARK`: Hình thang $[0.0, 0.0, 50.0, 90.0]$
-    *   `NORMAL`: Hình tam giác $[60.0, 128.0, 195.0]$
-    *   `BRIGHT`: Hình thang $[165.0, 210.0, 255.0, 255.0]$
+    *   `DARK`: Gaussian $[0.0, 40.0]$
+    *   `NORMAL`: Gaussian $[128.0, 45.0]$
+    *   `BRIGHT`: Gaussian $[255.0, 40.0]$
 3.  **Facial Angle ($\theta$)** $[0, 90]$:
-    *   `FRONTAL`: Hình thang $[0.0, 0.0, 15.0, 35.0]$
-    *   `MARGINAL`: Hình thang $[20.0, 40.0, 90.0, 90.0]$
+    *   `FRONTAL`: Gaussian $[0.0, 20.0]$
+    *   `MARGINAL`: Gaussian $[90.0, 40.0]$
 
-#### B. Định Nghĩa Tập Mờ Đầu Ra (Consequent)
-*   **Security Risk** $[0.0, 1.0]$: (Giá trị mặc định khi lỗi là $1.0$ - mức rủi ro cao nhất để đảm bảo an toàn).
-    *   `MINIMUM`: Hình tam giác $[0.0, 0.0, 0.35]$
-    *   `AVERAGE`: Hình tam giác $[0.25, 0.50, 0.75]$
-    *   `MAXIMUM`: Hình thang $[0.65, 0.85, 1.0, 1.0]$
+#### B. Output Fuzzy Set (Consequent)
+*   **Security Risk** $[0.0, 1.0]$: (Defaults to $1.0$ - highest risk level - on error to ensure safety).
+    *   `MINIMUM`: Gaussian $[0.0, 0.1]$
+    *   `AVERAGE`: Gaussian $[0.5, 0.1]$
+    *   `MAXIMUM`: Gaussian $[1.0, 0.08]$
 
-#### C. Tập Luật Mờ (Fuzzy Rules)
-Gồm 5 luật logic mờ để liên kết các biến đầu vào với mức rủi ro đầu ra:
-1.  **R1**: `IF` độ nhận diện HIGH `AND` ánh sáng NORMAL `AND` góc nghiêng FRONTAL `THEN` rủi ro là MINIMUM (Mở khóa an toàn).
-2.  **R2**: `IF` độ nhận diện HIGH `AND` ánh sáng DARK `AND` góc nghiêng MARGINAL `THEN` rủi ro là AVERAGE.
-3.  **R3**: `IF` độ nhận diện MEDIUM `AND` ánh sáng BRIGHT `AND` góc nghiêng MARGINAL `THEN` rủi ro là AVERAGE.
-4.  **R4**: `IF` độ nhận diện MEDIUM `AND` ánh sáng DARK `AND` góc nghiêng FRONTAL `THEN` rủi ro là MAXIMUM.
-5.  **R5**: `IF` độ nhận diện LOW `THEN` rủi ro là MAXIMUM (Nhận diện kém hoặc người lạ).
+#### C. Fuzzy Rule Base
+Consists of 13 fuzzy logic rules linking the input variables to the output risk level:
+1.  **R1**: `IF` model_confidence is LOW `THEN` security_risk is MAXIMUM (Low recognition confidence / stranger).
+2.  **R2**: `IF` model_confidence is HIGH `AND` illumination is NORMAL `AND` facial_angle is FRONTAL `THEN` security_risk is MINIMUM (Direct unlock).
+3.  **R3**: `IF` model_confidence is HIGH `AND` illumination is NORMAL `AND` facial_angle is MARGINAL `THEN` security_risk is AVERAGE (Requires OTP).
+4.  **R4**: `IF` model_confidence is HIGH `AND` illumination is DARK `AND` facial_angle is FRONTAL `THEN` security_risk is AVERAGE.
+5.  **R5**: `IF` model_confidence is HIGH `AND` illumination is DARK `AND` facial_angle is MARGINAL `THEN` security_risk is AVERAGE.
+6.  **R6**: `IF` model_confidence is HIGH `AND` illumination is BRIGHT `AND` facial_angle is FRONTAL `THEN` security_risk is AVERAGE.
+7.  **R7**: `IF` model_confidence is HIGH `AND` illumination is BRIGHT `AND` facial_angle is MARGINAL `THEN` security_risk is AVERAGE.
+8.  **R8**: `IF` model_confidence is MEDIUM `AND` illumination is NORMAL `AND` facial_angle is FRONTAL `THEN` security_risk is AVERAGE.
+9.  **R9**: `IF` model_confidence is MEDIUM `AND` illumination is NORMAL `AND` facial_angle is MARGINAL `THEN` security_risk is MAXIMUM.
+10. **R10**: `IF` model_confidence is MEDIUM `AND` illumination is DARK `AND` facial_angle is FRONTAL `THEN` security_risk is MAXIMUM.
+11. **R11**: `IF` model_confidence is MEDIUM `AND` illumination is DARK `AND` facial_angle is MARGINAL `THEN` security_risk is MAXIMUM.
+12. **R12**: `IF` model_confidence is MEDIUM `AND` illumination is BRIGHT `AND` facial_angle is FRONTAL `THEN` security_risk is AVERAGE.
+13. **R13**: `IF` model_confidence is MEDIUM `AND` illumination is BRIGHT `AND` facial_angle is MARGINAL `THEN` security_risk is AVERAGE.
 
-#### D. Giải Mờ (Defuzzification) & Ánh Xạ Hành Động
-*   Sử dụng phương pháp trọng tâm **Centroid** với độ phân giải 200 bước chia để đưa ra điểm rủi ro rõ (crisp score) trong khoảng $[0.0, 1.0]$.
-*   Từ điểm rủi ro, hệ thống ánh xạ ra hành động thực tế dựa trên ngưỡng:
-    *   **$\text{Risk} < 0.30$** $\rightarrow$ `unlock`: Cho phép mở cửa.
-    *   **$\text{Risk} < 0.60$** $\rightarrow$ `otp`: Yêu cầu nhập mã OTP (xác thực 2 lớp).
-    *   **$\text{Risk} < 0.85$** $\rightarrow$ `deny`: Từ chối truy cập và ghi lại nhật ký.
-    *   **$\text{Risk} \ge 0.85$** $\rightarrow$ `lockout`: Khóa hệ thống ngay lập tức & báo động.
+#### D. Defuzzification & Action Mapping
+*   Uses the **Centroid** defuzzification method with a resolution of 200 partition steps to output a crisp score in the range $[0.0, 1.0]$.
+*   Based on this risk score, the system maps to a physical lock action:
+    *   **$\text{Risk} < 0.30$** $\rightarrow$ `unlock`: Unlock the door.
+    *   **$\text{Risk} < 0.60$** $\rightarrow$ `otp`: Prompt for OTP code (Two-factor authentication).
+    *   **$\text{Risk} < 0.85$** $\rightarrow$ `deny`: Deny access and log event.
+    *   **$\text{Risk} \ge 0.85$** $\rightarrow$ `lockout`: Immediately lock system and trigger alarm.
 
-*Lưu ý*: Nếu thư viện `pyfuzzylite` không được cài đặt trên hệ thống Raspberry Pi, mã nguồn cung cấp một lớp dự phòng (Fallback Decision) mô phỏng các ngưỡng logic tĩnh tương đương để tránh lỗi crash hệ thống.
+*Note*: If the `pyfuzzylite` library is not installed on the target Raspberry Pi system, the source code provides a static logical fallback wrapper (`Fallback Decision`) simulating similar rule thresholds to prevent application crashes.
 
 ---
 
-### 2.5 [hardware_io.py](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py) (Tương Tác Thiết Bị Ngoại Vi)
-Lớp [SmartLockHardware](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py#L57) quản lý hai thiết bị vật lý chính: Bàn phím ma trận 4x4 để nhập mã PIN và Servo điều khiển chốt khóa cửa.
+### 2.5 [hardware_io.py](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py) (Peripheral Device Interaction)
+The [SmartLockHardware](file:///d:/SmartLock_Fuzzy/backend/services/hardware_io.py#L57) class manages two main physical devices: a 4x4 matrix keypad for PIN input and a Servo motor controlling the physical door lock latch.
 
-#### A. Cơ Chế Quét Bàn Phím Ma Trận 4x4 Dựa Trên Ngắt (Interrupt-driven Keypad Matrix)
-Thay vì sử dụng vòng lặp kiểm tra liên tục (polling) làm tiêu tốn CPU, hệ thống sử dụng cơ chế **Ngắt phần cứng** của Raspberry Pi:
+#### A. Interrupt-Driven 4x4 Matrix Keypad Scanning
+Instead of using a continuous scanning loop (polling) that consumes significant CPU, the system uses Raspberry Pi's **Hardware Interrupts**:
 *   **Wiring**:
-    *   4 Hàng (Rows): GPIO 17, 27, 22, 5 (Cấu hình ngõ ra - OUTPUT).
-    *   4 Cột (Cols): GPIO 6, 13, 19, 26 (Cấu hình ngõ vào - INPUT, có trở kéo xuống nội `PULL_DOWN`).
-*   **Trạng thái bình thường**: Hệ thống kéo tất cả 4 Hàng lên mức cao (`GPIO.HIGH`). Các Cột ở trạng thái chờ và được kích hoạt ngắt cạnh lên (`GPIO.RISING`).
-*   **Khi có phím nhấn**:
-    1.  Mạch điện giữa Hàng (HIGH) và Cột được đóng, tạo ra một cạnh lên RISING tại chân Cột tương ứng. Ngắt kích hoạt hàm `_col_interrupt`.
-    2.  Hệ thống áp dụng bộ lọc chống rung phần mềm (Debounce) bằng cách bỏ qua các ngắt xảy ra trong khoảng thời gian `< 250` mili giây.
-    3.  Để xác định chính xác nút nào được nhấn (Hàm `_scan_key`):
-        *   Hạ tất cả các Hàng xuống mức thấp (`GPIO.LOW`).
-        *   Lần lượt kéo từng Hàng lên mức cao (`GPIO.HIGH`), chờ 5ms, rồi kiểm tra trạng thái logic của chân Cột bị kích hoạt ngắt.
-        *   Hàng nào làm cho Cột lên mức cao thì giao lộ Hàng/Cột đó chính là phím được nhấn (dựa trên bản đồ phím `_KEYMAP`).
-        *   Khôi phục lại tất cả các Hàng về mức cao (`GPIO.HIGH`) để sẵn sàng cho lần nhấn tiếp theo.
+    *   4 Rows: GPIO 17, 27, 22, 5 (Configured as OUTPUT).
+    *   4 Columns: GPIO 6, 13, 19, 26 (Configured as INPUT, with internal `PULL_DOWN` resistors enabled).
+*   **Normal State**: The system pulls all 4 Rows `HIGH`. The Columns wait in a listening state configured to trigger a rising-edge interrupt (`GPIO.RISING`).
+*   **When a Key is Pressed**:
+    1.  The electrical connection between a Row (HIGH) and a Column is closed, producing a `RISING` edge signal on that Column's pin, triggering the `_col_interrupt` handler.
+    2.  The system applies a software debounce filter, ignoring any interrupts occurring within `< 250` milliseconds of the last registered keypress.
+    3.  To identify which key was pressed (the `_scan_key` method):
+        *   Sets all Row pins `LOW`.
+        *   Sequentially pulls each Row `HIGH`, waits 5ms, then checks the logic level of the Column pin that triggered the interrupt.
+        *   The Row that drives the Column `HIGH` indicates the row-column intersection of the pressed key (mapped via `_KEYMAP`).
+        *   Restores all Rows to `HIGH` to prepare for the next keypress.
 
-#### B. Cơ Chế Xác Thực PIN & Khóa Hệ Thống (Lockout)
-*   Mã PIN mặc định là `"123456"`. Mật khẩu được mã hóa bằng hàm băm **SHA-256** và so sánh dưới dạng mã hash để bảo mật.
-*   Bấm phím `*` để xóa bộ đệm PIN hiện tại.
-*   Bấm phím `#` hoặc nhập đủ 6 ký tự số để tự động gửi xác thực (`_submit_password`).
-*   Nếu nhập sai quá 5 lần liên tiếp (`_MAX_FAILED`):
-    *   Kích hoạt trạng thái khóa bàn phím trong 30 giây (`_LOCKOUT_SECONDS`).
-    *   OLED hiển thị bộ đếm ngược thời gian khóa. Mọi thao tác nhập PIN trong thời gian này đều bị từ chối.
+#### B. PIN Authentication & System Lockout
+*   The default PIN is `"123456"`. Passwords are encrypted using the **SHA-256** hash function and compared securely.
+*   Pressing the `*` key clears the current PIN input buffer.
+*   Pressing the `#` key or entering exactly 6 digits automatically submits the input (`_submit_password`).
+*   If incorrect inputs exceed 5 consecutive attempts (`_MAX_FAILED`):
+    *   Triggers keypad lockout for 30 seconds (`_LOCKOUT_SECONDS`).
+    *   The OLED display shows a countdown timer. Any PIN input attempt during this period is ignored.
 
-#### C. Điều Khiển Động Cơ Servo Mở Cửa
-Khóa cửa vật lý được giả lập bằng một động cơ RC Servo điều khiển bằng tín hiệu điều chế độ rộng xung (**PWM**) tại chân GPIO 18 (kênh phần cứng):
-*   Tần số xung PWM: $50\text{ Hz}$ (chu kỳ $20\text{ ms}$).
-*   **Góc mở khóa (Unlock)**: Duty Cycle = $7.5\%$ (độ rộng xung $1.5\text{ ms}$).
-*   **Góc khóa (Lock)**: Duty Cycle = $2.5\%$ (độ rộng xung $0.5\text{ ms}$).
-*   **Thuật toán chống rung Servo**: Sau khi thay đổi chu kỳ làm việc để xoay Servo đến góc mong muốn, hệ thống sẽ ngủ $0.5$ giây cho Servo chạy xong, sau đó gọi `ChangeDutyCycle(0)` để **tắt hoàn toàn xung điều khiển**. Điều này cực kỳ quan trọng đối với Servo analog để tránh hiện tượng rung giật cơ học, phát ra tiếng vo vo và tiết kiệm điện năng tiêu thụ.
-*   Khi có lệnh mở khóa, hệ thống chạy một luồng độc lập (`threading.Thread`) để không chặn luồng camera chính. Khóa sẽ tự động khóa lại sau một khoảng thời gian `unlock_duration` (mặc định 5.0 giây).
-
----
-
-### 2.6 [oled_display.py](file:///d:/SmartLock_Fuzzy/backend/services/oled_display.py) (Hiển Thị Trạng Thái)
-Điều khiển màn hình OLED SSD1306 độ phân giải $128 \times 64$ điểm ảnh thông qua giao tiếp SPI (cổng 0, thiết bị 0, DC chân 24, RST chân 25).
-
-*   **Vẽ giao diện**: Sử dụng thư viện `Pillow` để tạo một vùng đệm ảnh đen trắng kích thước $128 \times 64$, sau đó vẽ chữ, đường thẳng, hình tròn hoặc thanh tiến trình thông qua đối tượng `ImageDraw`.
-*   **Đồng bộ**: Sử dụng `threading.Lock` để tránh trường hợp nhiều tiến trình (tiến trình camera cập nhật ảnh nhận dạng mặt, tiến trình bàn phím cập nhật dấu chấm PIN) ghi đè lên màn hình OLED cùng một lúc, gây ra lỗi truyền nhận bus SPI.
-*   Màn hình OLED tự động cập nhật linh hoạt theo các sự kiện từ phần cứng và nhận diện khuôn mặt:
-    *   `show_idle()`: Trạng thái chờ.
-    *   `show_enter_pin(digits_entered)`: Hiển thị các chấm tròn đại diện cho mã PIN đang nhập.
-    *   `show_access_granted(source)`: Hiển thị thông báo chấp nhận (qua PIN hay Khuôn mặt).
-    *   `show_access_denied(message)`: Hiển thị từ chối truy cập.
-    *   `show_door_open(seconds)`: Đồng hồ đếm ngược thời gian cửa đang mở.
-    *   `show_lockout(seconds)`: Đếm ngược thời gian bị khóa do nhập sai PIN.
-    *   `show_registration(name, accepted, required)`: Vẽ thanh tiến trình đồ họa hiển thị phần trăm ảnh khuôn mặt đã thu thập được khi đăng ký người dùng mới.
+#### C. Door Latch Servo Control
+The physical door lock is simulated using an RC Servo motor controlled by a pulse-width modulation (**PWM**) signal on BCM GPIO pin 18 (hardware PWM channel):
+*   PWM frequency: $50\text{ Hz}$ ($20\text{ ms}$ period).
+*   **Unlocked Angle**: Duty Cycle = $7.5\%$ ($1.5\text{ ms}$ pulse width).
+*   **Locked Angle**: Duty Cycle = $2.5\%$ ($0.5\text{ ms}$ pulse width).
+*   **Servo Anti-Jitter Algorithm**: After changing the duty cycle to rotate the servo to the target angle, the system sleeps for $0.5$ seconds for the motion to complete, and then calls `ChangeDutyCycle(0)` to **completely disable the PWM signal**. This is critical for analog servos to eliminate mechanical buzzing/jitter, prevent motor wear, and conserve power.
+*   When an unlock command is received, the system runs the routine on a separate thread (`threading.Thread`) to avoid blocking the camera feed. The door automatically re-locks after a configurable `unlock_duration` (default 5.0 seconds).
 
 ---
 
-## 3. Bản Đồ Đấu Nối Raspberry Pi (Wiring Matrix)
+### 2.6 [oled_display.py](file:///d:/SmartLock_Fuzzy/backend/services/oled_display.py) (Status Display)
+Controls a $128 \times 64$ pixel SSD1306 OLED display using SPI communication (bus 0, device 0, DC pin 24, RST pin 25).
 
-Dưới đây là bảng cấu hình chân GPIO BCM thực tế được thiết lập trong mã nguồn của dịch vụ phần cứng:
+*   **Interface Rendering**: Uses the `Pillow` library to create a $128 \times 64$ monochrome image canvas, then renders text, lines, circles, or progress bars via the `ImageDraw` object.
+*   **Synchronization**: Employs a `threading.Lock` to prevent concurrent write collisions (e.g., when the camera thread updates a recognized face name while the keypad thread updates PIN entry indicators), which could crash the SPI bus transfer.
+*   The OLED display updates dynamically based on hardware and recognition events:
+    *   `show_idle()`: Idle status screen.
+    *   `show_enter_pin(digits_entered)`: Renders dots representing the numbers entered.
+    *   `show_access_granted(source)`: Displays access confirmation (via PIN or Face).
+    *   `show_access_denied(message)`: Displays access denied message.
+    *   `show_door_open(seconds)`: Displays countdown for how long the door remains open.
+    *   `show_lockout(seconds)`: Displays lockout countdown timer for incorrect PIN entry.
+    *   `show_registration(name, accepted, required)`: Draws a progress bar indicating the percentage of face images collected during user registration.
 
-| Thiết Bị | Loại Chân | Chân GPIO (BCM) | Ghi Chú |
+---
+
+## 3. Raspberry Pi Pinout Mapping (Wiring Matrix)
+
+Below is the BCM GPIO pinout mapping configured in the hardware services code:
+
+| Device Component | Pin Type | GPIO Pin (BCM) | Notes |
 | :--- | :--- | :--- | :--- |
-| **Keypad Row 1** | Ngõ ra (Output) | **GPIO 17** | Hàng 1 của ma trận bàn phím |
-| **Keypad Row 2** | Ngõ ra (Output) | **GPIO 27** | Hàng 2 của ma trận bàn phím |
-| **Keypad Row 3** | Ngõ ra (Output) | **GPIO 22** | Hàng 3 của ma trận bàn phím |
-| **Keypad Row 4** | Ngõ ra (Output) | **GPIO 5** | Hàng 4 của ma trận bàn phím |
-| **Keypad Col 1** | Ngõ vào ngắt (Input) | **GPIO 6** | Cột 1, cấu hình Pull-Down nội |
-| **Keypad Col 2** | Ngõ vào ngắt (Input) | **GPIO 13** | Cột 2, cấu hình Pull-Down nội |
-| **Keypad Col 3** | Ngõ vào ngắt (Input) | **GPIO 19** | Cột 3, cấu hình Pull-Down nội |
-| **Keypad Col 4** | Ngõ vào ngắt (Input) | **GPIO 26** | Cột 4, cấu hình Pull-Down nội |
-| **Servo Lock** | Ngõ ra PWM | **GPIO 18** | Chân PWM phần cứng Channel 0 |
-| **OLED MOSI (SDA)** | Giao tiếp SPI | **GPIO 10 (MOSI)** | Đường truyền dữ liệu SPI |
-| **OLED SCLK (SCL)** | Giao tiếp SPI | **GPIO 11 (SCLK)** | Xung giữ nhịp SPI |
-| **OLED CS (Chip Select)** | Giao tiếp SPI | **GPIO 8 (CE0)** | Chọn chip SPI 0 |
-| **OLED DC (Data/Command)** | Giao tiếp SPI | **GPIO 24** | Chân phân biệt Dữ liệu/Lệnh |
-| **OLED RST (Reset)** | Giao tiếp SPI | **GPIO 25** | Chân thiết lập lại màn hình |
+| **Keypad Row 1** | Output | **GPIO 17** | Row 1 of keypad matrix |
+| **Keypad Row 2** | Output | **GPIO 27** | Row 2 of keypad matrix |
+| **Keypad Row 3** | Output | **GPIO 22** | Row 3 of keypad matrix |
+| **Keypad Row 4** | Output | **GPIO 5** | Row 4 of keypad matrix |
+| **Keypad Col 1** | Input (Interrupt) | **GPIO 6** | Column 1, internal pull-down |
+| **Keypad Col 2** | Input (Interrupt) | **GPIO 13** | Column 2, internal pull-down |
+| **Keypad Col 3** | Input (Interrupt) | **GPIO 19** | Column 3, internal pull-down |
+| **Keypad Col 4** | Input (Interrupt) | **GPIO 26** | Column 4, internal pull-down |
+| **Servo Lock** | PWM Output | **GPIO 18** | Hardware PWM Channel 0 pin |
+| **OLED MOSI (SDA)** | SPI Interface | **GPIO 10 (MOSI)** | SPI data line |
+| **OLED SCLK (SCL)** | SPI Interface | **GPIO 11 (SCLK)** | SPI clock line |
+| **OLED CS (Chip Select)** | SPI Interface | **GPIO 8 (CE0)** | SPI chip select 0 |
+| **OLED DC (Data/Command)**| SPI Interface | **GPIO 24** | Data / Command distinction line |
+| **OLED RST (Reset)** | SPI Interface | **GPIO 25** | Screen reset pin |

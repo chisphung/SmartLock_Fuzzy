@@ -34,7 +34,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 class LocalCameraWorker:
     def __init__(self) -> None:
-        self.camera_index = os.environ.get("CAMERA_INDEX", "/dev/video1")
+        self.camera_index = os.environ.get("CAMERA_INDEX", "/dev/video0")
         self.camera_id = os.environ.get("CAMERA_ID", "local_v4l2")
         self.recognizer_path = os.environ.get(
             "RECOGNIZER_PATH",
@@ -84,6 +84,8 @@ class LocalCameraWorker:
         try:
             self.hardware.start()
         except Exception as exc:
+            import traceback
+            traceback.print_exc()
             print(f"[Camera] Hardware init failed (non-fatal): {exc}")
 
         self._stop_event.clear()

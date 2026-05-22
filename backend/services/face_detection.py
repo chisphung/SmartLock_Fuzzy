@@ -14,7 +14,7 @@ import numpy as np
 
 class FaceDetection:
     UNKNOWN_LABEL = "Unknown"
-    RECOGNITION_THRESH = 80.0
+    RECOGNITION_THRESH = 150.0
 
     def __init__(self, recognizer_path: str = ""):
         self.recognizer_path = recognizer_path
@@ -78,12 +78,14 @@ class FaceDetection:
         roi = cv2.resize(gray[y : y + h, x : x + w], (100, 100))
         label_id, confidence = self._recognizer.predict(roi)
 
-        model_confidence = max(0.0, min(100.0, 100.0 - confidence))
+        model_confidence = max(
+            0.0, 100.0 - (70.0 * confidence / self.RECOGNITION_THRESH)
+        )
 
         print(f"[LBPH DEBUG] Recognition Predict Details:")
         print(f"  - Predicted label ID : {label_id}")
         print(f"  - Raw LBPH distance  : {confidence:.2f}")
-        print(f"  - Computed confidence: {model_confidence:.2f}")
+        print(f"  - Scaled confidence  : {model_confidence:.2f}")
         print(f"  - Threshold (max dist): {self.RECOGNITION_THRESH:.2f}")
 
         if confidence < self.RECOGNITION_THRESH:

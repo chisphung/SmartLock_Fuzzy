@@ -74,6 +74,9 @@ except Exception as exc:  # pragma: no cover - fallback for missing pyfuzzylite
             }
 
 
+_RECOGNITION_THRESH = 150.0  # Must match face_detection.RECOGNITION_THRESH
+
+
 class SmartLockFuzzyDecision:
     def __init__(self) -> None:
         self._controller = _FuzzyController()
@@ -91,7 +94,13 @@ class SmartLockFuzzyDecision:
             model_confidence = 0.0
         else:
             distance = float(detection.get("confidence", 100.0))
-            model_confidence = max(0.0, min(100.0, 100.0 - distance))
+            # Scale confidence so that distance=0 -> 100,
+            # distance=threshold -> 30 (LOW-MEDIUM border).
+            # This prevents the old 100-distance formula from
+            # collapsing to 0 for any distance > 100.
+            model_confidence = max(
+                0.0, 100.0 - (70.0 * distance / _RECOGNITION_THRESH)
+            )
 
         return self._controller.evaluate(
             confidence=model_confidence,

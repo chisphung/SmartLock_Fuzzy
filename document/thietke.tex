@@ -223,10 +223,57 @@ OLED SSD1306 SPI & MOSI, SCLK, CE0 & 10, 11, 8 \\
 \end{table}
 
 \begin{figure}[H]
-    \centering
-    \todoimage{Chèn ảnh mạch thực tế hoặc sơ đồ nối dây Raspberry Pi, keypad, OLED và servo}
-    \caption{Sơ đồ/ảnh lắp đặt phần cứng}
-    \label{fig:hardware_photo_todo}
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    pi/.style={draw, rounded corners, fill=green!8, minimum width=4.0cm, minimum height=5.8cm, align=center},
+    dev/.style={draw, rounded corners, fill=blue!7, minimum width=3.6cm, minimum height=1.0cm, align=center},
+    power/.style={draw, rounded corners, fill=red!7, minimum width=3.6cm, minimum height=1.0cm, align=center},
+    wire/.style={thick, -{Stealth}},
+    pwr/.style={thick, red!70!black, -{Stealth}},
+    gnd/.style={thick, black!75, -{Stealth}},
+    sig/.style={thick, blue!70!black, -{Stealth}},
+    note/.style={font=\scriptsize, align=center, fill=white, inner sep=1pt}
+]
+
+\node[pi] (pi) at (0,0) {\textbf{Raspberry Pi 4B}\\[0.2cm]
+\begin{tabular}{ll}
+GPIO17 & Keypad R1\\
+GPIO27 & Keypad R2\\
+GPIO22 & Keypad R3\\
+GPIO5  & Keypad R4\\
+GPIO6  & Keypad C1\\
+GPIO13 & Keypad C2\\
+GPIO19 & Keypad C3\\
+GPIO26 & Keypad C4\\
+GPIO18 & Servo PWM\\
+GPIO10 & OLED MOSI\\
+GPIO11 & OLED SCLK\\
+GPIO8  & OLED CS\\
+GPIO24 & OLED DC\\
+GPIO25 & OLED RST
+\end{tabular}};
+
+\node[dev] (cam) at (-5.6,2.4) {USB Camera\\\texttt{/dev/video0}};
+\node[dev] (keypad) at (5.8,2.2) {Keypad 4x4\\R1--R4, C1--C4};
+\node[dev] (oled) at (5.8,0.0) {OLED SSD1306 SPI\\VCC, GND, SCLK, MOSI, RST, DC, CS};
+\node[dev] (servo) at (5.8,-2.2) {RC Servo\\Signal, 5V, GND};
+\node[power] (supply) at (-5.6,-2.2) {Nguồn 5V ngoài\\cho servo};
+
+\draw[wire] (cam.east) -- node[note, above] {USB} (pi.west);
+\draw[sig] (pi.east) -- node[note, above] {8 GPIO matrix} (keypad.west);
+\draw[sig] (pi.east) -- node[note, above] {SPI + DC/RST} (oled.west);
+\draw[sig] (pi.east) -- node[note, above] {GPIO18 PWM} (servo.west);
+\draw[pwr] (supply.east) -- node[note, below] {5V} (servo.west);
+\draw[gnd] (supply.north east) to[bend left=18] node[note, above] {GND chung} (pi.south west);
+\draw[gnd] (pi.south east) to[bend right=18] node[note, below] {GND} (servo.south west);
+
+\end{tikzpicture}
+}
+\caption{Sơ đồ kết nối phần cứng của hệ thống SmartLock Fuzzy}
+\label{fig:hardware_schematic}
 \end{figure}
 
 Keypad sử dụng interrupt trên các cột để tránh polling liên tục. Servo được điều khiển bằng PWM, sau đó duty cycle được đưa về 0 để giảm rung. OLED được render bằng Pillow trước khi gửi qua SPI qua thư viện luma.oled \cite{lumaoled}.

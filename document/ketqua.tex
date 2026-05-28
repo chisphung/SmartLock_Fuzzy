@@ -24,11 +24,11 @@ Fuzzy logic & Hoàn thành & Mamdani fuzzy bằng fuzzylite và fallback logic. 
 \hline
 Đăng ký khuôn mặt & Hoàn thành & Thu mẫu, lọc chất lượng, train lại LBPH. \\
 \hline
-Keypad/OLED/Servo & Hoàn thành mức code & Cần kiểm chứng lại trên phần cứng thực tế. \\
+Keypad/OLED/Servo & Đã lắp thử & Có ảnh đấu nối thực tế với keypad, OLED, servo và camera USB. \\
 \hline
 Frontend dashboard & Hoàn thành & Live frame polling, registration, password change. \\
 \hline
-Benchmark utility & Có sẵn & Cần chạy và chèn log số liệu cuối cùng. \\
+Benchmark utility & Đã chạy & Đã đo trên Raspberry Pi với camera \texttt{/dev/video0}, thời gian 60 giây. \\
 \hline
 \end{tabularx}
 \end{table}
@@ -98,52 +98,56 @@ Frontend hiển thị được:
     \label{fig:frontend_result}
 \end{figure}
 
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{benchmark_ui.png}
+    \caption{Giao diện benchmark hiển thị FPS, CPU, RAM và độ trễ từng bước}
+    \label{fig:benchmark_ui_result}
+\end{figure}
+
 \subsection{Kết quả phần cứng}
 
-Code phần cứng đã bao gồm keypad interrupt, lockout, OLED screen và servo anti-jitter. Tuy nhiên, repository hiện tại chưa kèm ảnh lắp mạch và log chạy thực tế trên Raspberry Pi. Khi bổ sung kết quả, cần chèn:
-
-\begin{itemize}
-    \item ảnh nối dây Raspberry Pi với keypad/OLED/servo,
-    \item ảnh OLED ở các trạng thái Ready, Enter PIN, Access Granted và Lockout,
-    \item video hoặc ảnh servo mở/đóng khóa,
-    \item log backend khi unlock bằng mặt và bằng keypad.
-\end{itemize}
+Hệ thống đã được lắp trên Raspberry Pi cùng camera USB, keypad ma trận 4x4, OLED SSD1306 và servo. Ảnh ở Hình \ref{fig:hardware_connected_result} cho thấy cấu hình kết nối thực tế: camera gắn qua USB, keypad nối vào các chân GPIO hàng/cột, OLED nối qua SPI và servo nhận tín hiệu PWM từ GPIO18. Servo được cấp nguồn 5V ngoài và nối chung GND với Raspberry Pi để tránh sụt áp khi motor quay.
 
 \begin{figure}[H]
     \centering
-    \todoimage{Chèn ảnh OLED/keypad/servo chạy trên Raspberry Pi}
-    \caption{Kết quả kiểm thử phần cứng}
-    \label{fig:hardware_result_todo}
+    \includegraphics[width=\linewidth]{schematic_connected.png}
+    \caption{Mạch phần cứng đã đấu nối trên Raspberry Pi}
+    \label{fig:hardware_connected_result}
 \end{figure}
+
+Trong quá trình chạy thử, OLED hiển thị trạng thái \texttt{SmartLock Ready}; keypad được dùng cho kênh xác thực PIN; servo đóng vai trò cơ cấu chốt khóa. Phần mềm phần cứng đã bao gồm quét keypad bằng interrupt, chống dội phím, lockout sau nhiều lần nhập sai và đưa duty cycle servo về 0 sau khi quay để giảm rung.
 
 \subsection{Benchmark và giới hạn kiểm chứng}
 
-Script \texttt{backend/benchmark\_pipeline.py} có thể chạy benchmark không cần phần cứng thật nhờ mock các module GPIO/OLED. Báo cáo này chưa chèn số liệu benchmark cuối cùng vì môi trường hiện tại chưa chạy pipeline đầy đủ với dependency và model thực tế. Khi chạy xong, cần bổ sung bảng:
+Benchmark được chạy trực tiếp trên thiết bị edge Raspberry Pi với camera \texttt{/dev/video0}, độ phân giải $640\times480$, FPS capture đặt 10, thời gian đo 60 giây và 20 frame warm-up. Tổng cộng script ghi nhận 489 frame, trong đó có 435 frame không có mặt và 54 frame có mặt; không có frame bị drop. Throughput trung bình đạt 8.14 FPS. Nhiệt độ CPU cuối quá trình đo là $67.7^\circ$C, xung CPU 1800 MHz và cờ throttling là \texttt{0x0}, cho thấy thiết bị không bị throttling trong lần đo này.
 
 \begin{table}[H]
 \centering
-\caption{Bảng benchmark cần bổ sung sau khi chạy trên thiết bị}
-\label{tab:benchmark_todo}
+\caption{Kết quả benchmark pipeline trên Raspberry Pi}
+\label{tab:benchmark_results}
 \begin{tabular}{|l|c|c|}
 \hline
 \textbf{Chỉ số} & \textbf{Không có mặt} & \textbf{Có mặt} \\
 \hline
-Face detection latency & TODO & TODO \\
+Face detection latency & 111.26 ms & 108.43 ms \\
 \hline
-Face recognition latency & TODO & TODO \\
+Face recognition latency & 0.00 ms & 2.15 ms \\
 \hline
-Fuzzy decision latency & TODO & TODO \\
+Fuzzy decision latency & 0.08 ms & 5.90 ms \\
 \hline
-JPEG encode latency & TODO & TODO \\
+JPEG/base64 encode latency & 5.91 ms & 6.34 ms \\
 \hline
-Total pipeline latency & TODO & TODO \\
+Total pipeline latency & 121.36 ms & 127.36 ms \\
 \hline
-RAM usage & TODO & TODO \\
+RAM usage & 89.27 MB & 89.25 MB \\
 \hline
-CPU utilization & TODO & TODO \\
+CPU utilization & 319.07\% & 319.07\% \\
 \hline
 \end{tabular}
 \end{table}
+
+Kết quả cho thấy phần tốn thời gian nhất là Haar Cascade, chiếm hơn 100 ms mỗi frame ở cả hai trường hợp. Khi có khuôn mặt, hệ thống phát sinh thêm chi phí LBPH và fuzzy decision, nhưng tổng độ trễ chỉ tăng từ 121.36 ms lên 127.36 ms. Với throughput khoảng 8 FPS, pipeline đủ dùng cho kịch bản khóa cửa, nơi yêu cầu chính là phản hồi ổn định trong khoảng dưới một giây thay vì video FPS cao.
 
 Các giới hạn hiện tại:
 

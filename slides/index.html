@@ -1,0 +1,743 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SmartLock Fuzzy Slides</title>
+  <style>
+    :root {
+      --blue: #005691;
+      --ink: #142033;
+      --muted: #617083;
+      --line: #d8e0ea;
+      --bg: #f5f8fb;
+      --green: #208463;
+      --amber: #b87922;
+      --red: #b64848;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: #111827;
+      color: var(--ink);
+      font-family: "Inter", "Segoe UI", Arial, sans-serif;
+    }
+
+    .deck {
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .slide {
+      width: 100vw;
+      height: 100vh;
+      padding: 54px 74px 44px;
+      display: none;
+      background: linear-gradient(180deg, #ffffff 0%, var(--bg) 100%);
+      position: absolute;
+      inset: 0;
+    }
+
+    .slide.active {
+      display: flex;
+      flex-direction: column;
+    }
+
+    h1,
+    h2,
+    h3 {
+      margin: 0;
+      color: var(--blue);
+      line-height: 1.1;
+    }
+
+    h1 {
+      font-size: 46px;
+      max-width: 940px;
+    }
+
+    h2 {
+      font-size: 34px;
+      margin-bottom: 28px;
+    }
+
+    h3 {
+      font-size: 20px;
+      margin-bottom: 10px;
+    }
+
+    p,
+    li {
+      font-size: 22px;
+      line-height: 1.42;
+    }
+
+    ul,
+    ol {
+      margin: 0;
+      padding-left: 26px;
+    }
+
+    li + li {
+      margin-top: 10px;
+    }
+
+    code {
+      font-family: "JetBrains Mono", "Consolas", monospace;
+      font-size: 0.88em;
+      background: #e8eef6;
+      padding: 2px 6px;
+      border-radius: 5px;
+      color: #1d4669;
+    }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 18px;
+      background: #fff;
+      border: 1px solid var(--line);
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    th {
+      color: var(--blue);
+      background: #edf4fb;
+      font-weight: 700;
+    }
+
+    .title-slide {
+      justify-content: center;
+      align-items: flex-start;
+      gap: 22px;
+      background:
+        linear-gradient(120deg, rgba(0, 86, 145, 0.1), rgba(32, 132, 99, 0.06)),
+        #ffffff;
+    }
+
+    .title-top {
+      display: flex;
+      align-items: center;
+      gap: 24px;
+    }
+
+    .logo {
+      width: 112px;
+      height: 112px;
+      object-fit: contain;
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px;
+      border: 1px solid var(--line);
+    }
+
+    .subtitle {
+      font-size: 24px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+
+    .authors {
+      margin-top: 24px;
+      padding: 20px 24px;
+      border-left: 5px solid var(--blue);
+      background: rgba(255, 255, 255, 0.75);
+      font-size: 20px;
+      line-height: 1.55;
+      width: 780px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 34px;
+      align-items: start;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 10px 24px rgba(20, 32, 51, 0.08);
+    }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+
+    .stat {
+      text-align: center;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px 12px;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 34px;
+      color: var(--blue);
+      line-height: 1.1;
+    }
+
+    .stat span {
+      font-size: 15px;
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin: 10px 0 30px;
+    }
+
+    .flow .node {
+      position: relative;
+      padding: 18px 12px;
+      border: 2px solid #bfd0e1;
+      border-radius: 8px;
+      text-align: center;
+      background: #fff;
+      font-size: 19px;
+      font-weight: 700;
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .flow .node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -21px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--blue);
+      font-size: 28px;
+    }
+
+    .arch {
+      display: grid;
+      grid-template-columns: 1fr 1.1fr 1fr 1fr;
+      gap: 16px;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    .arch .box {
+      background: #fff;
+      border: 2px solid #bfd0e1;
+      border-radius: 8px;
+      min-height: 94px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 14px;
+      font-size: 19px;
+      font-weight: 700;
+      position: relative;
+    }
+
+    .arch .box:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -24px;
+      color: var(--blue);
+      font-size: 28px;
+      z-index: 2;
+    }
+
+    .image-frame {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: 0 10px 24px rgba(20, 32, 51, 0.08);
+    }
+
+    .image-frame img {
+      display: block;
+      width: 100%;
+      max-height: 560px;
+      object-fit: contain;
+    }
+
+    .image-pair img {
+      height: 310px;
+      object-fit: contain;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: #e9f2fa;
+      color: var(--blue);
+      font-size: 15px;
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .footer {
+      position: absolute;
+      left: 74px;
+      right: 74px;
+      bottom: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: #718096;
+      font-size: 13px;
+    }
+
+    .progress {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      height: 5px;
+      background: var(--blue);
+      transition: width 160ms ease;
+    }
+
+    .controls {
+      position: fixed;
+      right: 22px;
+      bottom: 18px;
+      display: flex;
+      gap: 8px;
+      z-index: 20;
+    }
+
+    .controls button {
+      width: 42px;
+      height: 36px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      color: var(--blue);
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+    }
+
+    .small {
+      font-size: 18px;
+      color: var(--muted);
+    }
+
+    .tight li {
+      font-size: 20px;
+    }
+
+    @media print {
+      body,
+      .deck {
+        background: #fff;
+        overflow: visible;
+        height: auto;
+      }
+      .slide {
+        display: flex !important;
+        page-break-after: always;
+        position: relative;
+      }
+      .controls {
+        display: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck">
+    <section class="slide title-slide active">
+      <div class="title-top">
+        <img class="logo" src="../document/uit_logo.png" alt="UIT logo" />
+        <div>
+          <div class="badge">CE224.Q11</div>
+          <h1>Hệ thống khóa cửa thông minh nhận diện khuôn mặt kết hợp Fuzzy Logic</h1>
+          <div class="subtitle">Trường Đại học Công nghệ Thông tin - ĐHQG TP.HCM</div>
+        </div>
+      </div>
+      <div class="authors">
+        <strong>Sinh viên thực hiện</strong><br />
+        Nguyễn Hữu Minh Chiến - 23520183<br />
+        Phùng Minh Chí - 23520179<br />
+        Nguyễn Lê Minh Anh - 23520063<br /><br />
+        <strong>Giảng viên hướng dẫn:</strong> ThS. Phạm Minh Quân
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Nội dung trình bày</h2>
+      <div class="grid-2">
+        <ol>
+          <li>Bài toán và mục tiêu</li>
+          <li>Kiến trúc hệ thống</li>
+          <li>Pipeline xử lý ảnh</li>
+          <li>Fuzzy logic decision</li>
+        </ol>
+        <ol start="5">
+          <li>Tích hợp phần cứng</li>
+          <li>Giao diện web</li>
+          <li>Benchmark trên thiết bị edge</li>
+          <li>Kết luận và hướng phát triển</li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Bài toán</h2>
+      <div class="grid-2">
+        <div>
+          <ul>
+            <li>Khóa cơ, thẻ từ và mã PIN dễ mất, lộ hoặc bị sao chép.</li>
+            <li>Nhận diện khuôn mặt tự nhiên hơn nhưng phụ thuộc ánh sáng, góc mặt và chất lượng camera.</li>
+            <li>Thiết bị cần xử lý cục bộ để giảm phụ thuộc cloud và giữ dữ liệu hình ảnh tại biên.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Ý tưởng chính</h3>
+          <p>Kết hợp nhận diện khuôn mặt với fuzzy logic để đánh giá rủi ro truy cập thay vì chỉ dùng một ngưỡng cứng.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Mục tiêu đề tài</h2>
+      <ul>
+        <li>Xây dựng backend FastAPI đọc camera cục bộ và cung cấp API cho dashboard.</li>
+        <li>Phát hiện khuôn mặt bằng Haar Cascade, nhận diện danh tính bằng LBPH.</li>
+        <li>Tính model confidence, illumination và facial angle để đưa vào fuzzy controller.</li>
+        <li>Tích hợp keypad 4x4, OLED SSD1306 và servo trên Raspberry Pi.</li>
+        <li>Xây dựng dashboard Next.js để quan sát camera, đăng ký khuôn mặt, đổi PIN và chạy benchmark.</li>
+      </ul>
+    </section>
+
+    <section class="slide">
+      <h2>Kiến trúc tổng quan</h2>
+      <div class="arch">
+        <div class="box">USB Camera<br />Keypad / OLED / Servo</div>
+        <div class="box">LocalCameraWorker<br />điều phối pipeline</div>
+        <div class="box">OpenCV + LBPH<br />Mamdani Fuzzy</div>
+        <div class="box">FastAPI<br />Next.js Dashboard</div>
+      </div>
+      <div class="grid-3" style="margin-top: 32px;">
+        <div class="card">
+          <h3>Backend</h3>
+          <p class="small">Sở hữu camera, phần cứng, cache trạng thái và API.</p>
+        </div>
+        <div class="card">
+          <h3>Vision + Fuzzy</h3>
+          <p class="small">Phát hiện mặt, nhận diện, đo chất lượng frame và tính rủi ro.</p>
+        </div>
+        <div class="card">
+          <h3>Frontend</h3>
+          <p class="small">Hiển thị live camera, đăng ký khuôn mặt, đổi PIN và benchmark.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Pipeline xử lý một frame</h2>
+      <div class="flow">
+        <div class="node">Đọc frame</div>
+        <div class="node">Haar detect</div>
+        <div class="node">LBPH recognize</div>
+        <div class="node">Đo sáng / góc</div>
+        <div class="node">Fuzzy risk</div>
+        <div class="node">Action</div>
+        <div class="node">Overlay + JPEG</div>
+        <div class="node">API cache</div>
+      </div>
+      <ul>
+        <li>Nếu có nhiều khuôn mặt, hệ thống giữ bounding box lớn nhất.</li>
+        <li>Frontend polling frame mới nhất qua <code>/api/v1/camera/frame</code>.</li>
+      </ul>
+    </section>
+
+    <section class="slide">
+      <h2>Haar Cascade và LBPH</h2>
+      <div class="grid-2 image-pair">
+        <div class="image-frame">
+          <img src="../document/haar_cascade.png" alt="Haar Cascade" />
+          <h3>Haar Cascade</h3>
+          <p class="small">Phát hiện nhanh khuôn mặt frontal, phù hợp thiết bị edge.</p>
+        </div>
+        <div class="image-frame">
+          <img src="../document/lbph.png" alt="LBPH" />
+          <h3>LBPH</h3>
+          <p class="small">Nhận diện bằng histogram texture cục bộ; ngưỡng nhận diện trong code là <code>150.0</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Đặc trưng đầu vào cho fuzzy</h2>
+      <div class="grid-3">
+        <div class="card">
+          <h3>Model confidence</h3>
+          <p class="small">Scale từ khoảng cách LBPH:<br /><code>C=max(0,100-70d/150)</code></p>
+        </div>
+        <div class="card">
+          <h3>Illumination</h3>
+          <p class="small">Trung bình pixel grayscale trong ROI khuôn mặt.</p>
+        </div>
+        <div class="card">
+          <h3>Facial angle</h3>
+          <p class="small">Ước lượng từ bất đối xứng sáng giữa hai nửa ROI.</p>
+        </div>
+      </div>
+      <p>Khi không có detection hoặc danh tính là <code>Unknown</code>, hệ thống xử lý theo hướng fail-safe.</p>
+    </section>
+
+    <section class="slide">
+      <h2>Fuzzy logic decision</h2>
+      <div class="grid-2">
+        <div class="image-frame">
+          <img src="../document/fuzzy_full.png" alt="Fuzzy membership functions" />
+        </div>
+        <div>
+          <ul>
+            <li>Engine Mamdani với 3 input và 1 output.</li>
+            <li>Hàm thành viên Gaussian cho confidence, illumination, angle và risk.</li>
+            <li>AND dùng <code>Minimum()</code>, aggregation dùng <code>Maximum()</code>.</li>
+            <li>Defuzzification bằng <code>Centroid(200)</code>.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Luật fuzzy và ánh xạ hành động</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Nguyên tắc luật</h3>
+          <ul class="tight">
+            <li>LOW confidence luôn dẫn tới MAXIMUM risk.</li>
+            <li>HIGH confidence chỉ an toàn khi ánh sáng NORMAL và mặt FRONTAL.</li>
+            <li>MEDIUM confidence cần điều kiện ảnh tốt; điều kiện xấu làm rủi ro tăng mạnh.</li>
+          </ul>
+        </div>
+        <div>
+          <table>
+            <thead>
+              <tr><th>Security risk</th><th>Action</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>&lt; 0.30</td><td><code>unlock</code></td></tr>
+              <tr><td>&lt; 0.60</td><td><code>otp</code></td></tr>
+              <tr><td>&lt; 0.85</td><td><code>deny</code></td></tr>
+              <tr><td>&ge; 0.85</td><td><code>lockout</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Thiết kế phần cứng</h2>
+      <div class="grid-2">
+        <div>
+          <table>
+            <thead>
+              <tr><th>Thiết bị</th><th>Chức năng</th><th>GPIO</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Keypad 4x4</td><td>Row 1-4</td><td>17, 27, 22, 5</td></tr>
+              <tr><td>Keypad 4x4</td><td>Col 1-4</td><td>6, 13, 19, 26</td></tr>
+              <tr><td>Servo</td><td>PWM signal</td><td>18</td></tr>
+              <tr><td>OLED SPI</td><td>DC, RST</td><td>24, 25</td></tr>
+              <tr><td>OLED SPI</td><td>MOSI, SCLK, CE0</td><td>10, 11, 8</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="card">
+          <h3>Ghi chú đấu nối</h3>
+          <ul class="tight">
+            <li>Keypad quét bằng interrupt trên cột.</li>
+            <li>Servo dùng PWM, duty cycle về 0 sau khi quay.</li>
+            <li>Servo dùng nguồn 5V ngoài và nối GND chung với Raspberry Pi.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Mạch đấu nối thực tế</h2>
+      <div class="grid-2">
+        <div class="image-frame">
+          <img src="../document/schematic_connected.png" alt="Hardware connection photo" />
+        </div>
+        <div>
+          <ul>
+            <li>Raspberry Pi 4B là thiết bị edge chính.</li>
+            <li>Camera USB phục vụ nhận diện.</li>
+            <li>Keypad là kênh xác thực PIN dự phòng.</li>
+            <li>OLED hiển thị trạng thái hệ thống.</li>
+            <li>Servo mô phỏng cơ cấu chốt khóa.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Dashboard web</h2>
+      <div class="grid-2">
+        <div class="image-frame">
+          <img src="../document/dashboard_nextjs.png" alt="Dashboard UI" />
+        </div>
+        <div>
+          <ul>
+            <li>Polling <code>/api/v1/camera/frame</code>.</li>
+            <li>Hiển thị live frame, identity, LBPH distance, illumination và facial angle.</li>
+            <li>Đăng ký khuôn mặt và đổi mã PIN từ giao diện web.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Benchmark trên dashboard</h2>
+      <div class="grid-2">
+        <div class="image-frame">
+          <img src="../document/benchmark_ui.png" alt="Benchmark UI" />
+        </div>
+        <div>
+          <ul>
+            <li>Frontend có panel Benchmark để chạy và xem kết quả đo.</li>
+            <li>Backend ghi <code>summary.json</code>, <code>summary.md</code>, <code>frames.csv</code>.</li>
+            <li>Metric chính: FPS, CPU, RAM, nhiệt độ, latency từng bước.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Kết quả benchmark trên Raspberry Pi</h2>
+      <div class="stat-row">
+        <div class="stat"><strong>489</strong><span>frame đo</span></div>
+        <div class="stat"><strong>60.05 s</strong><span>thời gian đo</span></div>
+        <div class="stat"><strong>8.14 FPS</strong><span>throughput</span></div>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Chỉ số</th><th>Không có mặt</th><th>Có mặt</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Face detection latency</td><td>111.26 ms</td><td>108.43 ms</td></tr>
+          <tr><td>Face recognition latency</td><td>0.00 ms</td><td>2.15 ms</td></tr>
+          <tr><td>Fuzzy decision latency</td><td>0.08 ms</td><td>5.90 ms</td></tr>
+          <tr><td>JPEG/base64 encode latency</td><td>5.91 ms</td><td>6.34 ms</td></tr>
+          <tr><td>Total pipeline latency</td><td>121.36 ms</td><td>127.36 ms</td></tr>
+          <tr><td>RAM usage</td><td>89.27 MB</td><td>89.25 MB</td></tr>
+          <tr><td>CPU utilization</td><td>319.07%</td><td>319.07%</td></tr>
+        </tbody>
+      </table>
+      <p class="small">Nhiệt độ cuối: 67.7°C, CPU 1800 MHz, throttling <code>0x0</code>.</p>
+    </section>
+
+    <section class="slide">
+      <h2>Đánh giá</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>Kết quả đạt được</h3>
+          <ul class="tight">
+            <li>Backend, frontend và phần cứng đã chạy thành một hệ thống hoàn chỉnh.</li>
+            <li>Fuzzy logic đánh giá dựa trên cả danh tính và chất lượng frame.</li>
+            <li>Độ trễ khoảng 127 ms khi có khuôn mặt, phù hợp kịch bản khóa cửa.</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h3>Giới hạn</h3>
+          <ul class="tight">
+            <li>LBPH nhạy với ánh sáng và dữ liệu đăng ký.</li>
+            <li>Facial angle mới là ước lượng tương đối.</li>
+            <li>API quản trị và PIN runtime cần cơ chế bảo mật/lưu bền vững hơn.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="slide">
+      <h2>Kết luận và hướng phát triển</h2>
+      <ul>
+        <li>Đề tài hiện thực một khóa cửa thông minh chạy cục bộ trên Raspberry Pi, gồm nhận diện khuôn mặt, fuzzy decision, keypad, OLED, servo và dashboard web.</li>
+        <li>Benchmark cho thấy pipeline đủ dùng cho kịch bản khóa cửa, nơi yêu cầu phản hồi ổn định dưới một giây.</li>
+        <li>Hướng phát triển: face embedding nhẹ hơn, xác thực API, lưu PIN/log bằng SQLite, tăng test tự động và tối ưu face detection.</li>
+      </ul>
+      <div class="card" style="margin-top: 36px; text-align: center;">
+        <h2 style="margin: 0;">Cảm ơn thầy và các bạn đã lắng nghe</h2>
+      </div>
+    </section>
+  </main>
+
+  <div class="footer">
+    <span>SmartLock Fuzzy - CE224.Q11</span>
+    <span id="counter">1 / 17</span>
+  </div>
+  <div class="progress" id="progress"></div>
+  <div class="controls">
+    <button type="button" aria-label="Previous slide" id="prev">‹</button>
+    <button type="button" aria-label="Next slide" id="next">›</button>
+  </div>
+
+  <script>
+    const slides = Array.from(document.querySelectorAll(".slide"));
+    const counter = document.getElementById("counter");
+    const progress = document.getElementById("progress");
+    let current = 0;
+
+    function show(index) {
+      current = Math.max(0, Math.min(index, slides.length - 1));
+      slides.forEach((slide, i) => slide.classList.toggle("active", i === current));
+      counter.textContent = `${current + 1} / ${slides.length}`;
+      progress.style.width = `${((current + 1) / slides.length) * 100}%`;
+      window.location.hash = `slide-${current + 1}`;
+    }
+
+    document.getElementById("prev").addEventListener("click", () => show(current - 1));
+    document.getElementById("next").addEventListener("click", () => show(current + 1));
+
+    document.addEventListener("keydown", (event) => {
+      if (["ArrowRight", "PageDown", " "].includes(event.key)) {
+        event.preventDefault();
+        show(current + 1);
+      }
+      if (["ArrowLeft", "PageUp", "Backspace"].includes(event.key)) {
+        event.preventDefault();
+        show(current - 1);
+      }
+      if (event.key === "Home") show(0);
+      if (event.key === "End") show(slides.length - 1);
+    });
+
+    const hashMatch = window.location.hash.match(/slide-(\d+)/);
+    show(hashMatch ? Number(hashMatch[1]) - 1 : 0);
+  </script>
+</body>
+</html>

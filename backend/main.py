@@ -124,6 +124,7 @@ from contextlib import asynccontextmanager
 
 from routers import get_camera
 from services.local_camera import camera_worker
+from services.benchmark_runner import benchmark_runner
 
 
 logger = logging.getLogger("smartlock")
@@ -148,6 +149,30 @@ class RegisterStartRequest(BaseModel):
 class PasswordChangeRequest(BaseModel):
     current_password: str = Field(..., min_length=6, max_length=6)
     new_password: str = Field(..., min_length=6, max_length=6)
+
+
+class BenchmarkStartRequest(BaseModel):
+    source: str = Field(default="synthetic")
+    camera: str = Field(default="/dev/video0")
+    image: str | None = None
+    video: str | None = None
+    frames: int | None = Field(default=None, ge=1, le=20000)
+    duration: float | None = Field(default=15.0, ge=1.0, le=900.0)
+    warmup: int = Field(default=10, ge=0, le=1000)
+    fps_limit: float | None = Field(default=None, ge=0.0)
+    width: int | None = Field(default=640, ge=1)
+    height: int | None = Field(default=480, ge=1)
+    capture_fps: float | None = Field(default=10.0, ge=1.0)
+    jpeg_quality: int = Field(default=85, ge=1, le=100)
+    recognizer_path: str | None = None
+    simulate_face: bool = False
+    loop_video: bool = False
+    create_mock_model: bool = False
+    oled: str = Field(default="off")
+    power_watts: float | None = Field(default=None, gt=0.0)
+    output_dir: str | None = None
+    pause_camera_worker: bool = True
+    verbose: bool = False
 
 
 app = FastAPI(
@@ -214,6 +239,41 @@ async def change_keypad_password(request: PasswordChangeRequest):
 @app.get("/api/v1/keypad/status", tags=["keypad"])
 async def keypad_status():
     return camera_worker.hardware.status()
+
+
+@app.get("/api/v1/benchmark/status", tags=["benchmark"])
+async def benchmark_status():
+    return benchmark_runner.status()
+
+
+@app.get("/api/v1/benchmark/latest", tags=["benchmark"])
+async def benchmark_latest():
+    return benchmark_runner.latest()
+
+
+@app.post("/api/v1/benchmark/start", tags=["benchmark"])
+async def benchmark_start(request: BenchmarkStartRequest):
+    source = request.source.strip().lower()
+    oled = request.oled.strip().lower()
+    if source not in {"synthetic", "image", "video", "camera"}:
+        return {
+            "success": False,
+            "message": "source must be one of: synthetic, image, video, camera",
+        }
+    if oled not in {"off", "mock", "real"}:
+        return {"success": False, "message": "oled must be one of: off, mock, real"}
+
+    config = request.model_dump(exclude_none=True)
+    config["source"] = source
+    config["oled"] = oled
+
+    before_run = None
+    after_run = None
+    if source == "camera" and request.pause_camera_worker:
+        before_run = camera_worker.stop
+        after_run = camera_worker.start
+
+    return benchmark_runner.start(config, before_run=before_run, after_run=after_run)
 
 
 if __name__ == "__main__":

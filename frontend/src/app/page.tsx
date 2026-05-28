@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Header from '@/components/Header';
 import LiveVideoStream from '@/components/LiveVideoStream';
 import PasswordChange from '@/components/PasswordChange';
+import BenchmarkPanel from '@/components/BenchmarkPanel';
 
 export default function Home() {
   const [faceCount, setFaceCount] = useState(0);
@@ -65,6 +66,10 @@ export default function Home() {
               </div>
             </div>
           </aside>
+        </div>
+
+        <div className="mt-6">
+          <BenchmarkPanel />
         </div>
       </div>
     </main>

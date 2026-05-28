@@ -189,6 +189,8 @@ FastAPI exposes the following endpoints (default base URL: `http://localhost:800
 ## 🧪 Diagnostics & Verification
 
 ### Pipeline Benchmarking
+The dashboard includes a **Benchmark** panel that can start a benchmark run, poll progress, and visualize latency, FPS, CPU, RAM, and edge telemetry from the latest `summary.json`.
+
 To profile latency, FPS, RAM, CPU utilization, and Raspberry Pi telemetry on the edge device, run:
 ```bash
 python3 backend/benchmark_pipeline.py \

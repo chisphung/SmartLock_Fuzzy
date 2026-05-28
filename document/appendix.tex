@@ -1,0 +1,156 @@
+\appendix
+\section{Phụ lục: Mã nguồn và lệnh chạy}
+
+\subsection{Cấu trúc thư mục chính}
+
+\begin{lstlisting}[language=bash, caption={Cấu trúc chính của project}, label={lst:project_structure}]
+backend/
+  main.py                     # FastAPI entrypoint
+  routers/get_camera.py       # Camera latest/frame/history API cache
+  services/
+    local_camera.py           # Camera worker trung tam
+    face_detection.py         # Haar + LBPH + quality metrics
+    fuzzy_logic.py            # Wrapper fuzzy + fallback
+    registration.py           # Thu mau va train LBPH
+    hardware_io.py            # Keypad + servo
+    oled_display.py           # SSD1306 OLED UI
+  infra/fuzzy_controller.py   # Mamdani fuzzy controller
+
+frontend/
+  src/app/page.tsx
+  src/components/
+    LiveVideoStream.tsx
+    PasswordChange.tsx
+    Header.tsx
+
+custom_models/                # Model artifacts
+registered_faces/             # Mau dang ky, tao khi chay
+\end{lstlisting}
+
+\subsection{Lệnh chạy backend}
+
+\begin{lstlisting}[language=bash, caption={Cài đặt và chạy backend}, label={lst:backend_run}]
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python backend/main.py
+\end{lstlisting}
+
+Trên máy không phải Raspberry Pi, các thư viện GPIO/OLED có thể không import được. Khi chỉ benchmark phần pipeline, dùng script \texttt{backend/benchmark\_pipeline.py} vì script này mock phần cứng.
+
+\subsection{Lệnh chạy frontend}
+
+\begin{lstlisting}[language=bash, caption={Cài đặt và chạy frontend}, label={lst:frontend_run}]
+cd frontend
+npm install
+cp .env.example .env.local
+npm run dev
+\end{lstlisting}
+
+\subsection{Lệnh benchmark}
+
+\begin{lstlisting}[language=bash, caption={Benchmark pipeline trên thiết bị edge}, label={lst:benchmark_run}]
+python3 backend/benchmark_pipeline.py \
+  --source camera \
+  --camera /dev/video0 \
+  --duration 60 \
+  --warmup 20 \
+  --width 640 \
+  --height 480 \
+  --capture-fps 10 \
+  --output-dir benchmark_results/pi_camera
+\end{lstlisting}
+
+Script tự chia frame thành hai nhóm không có mặt và có mặt dựa trên kết quả Haar Cascade. Để điền đủ hai cột trong bảng báo cáo, có thể để camera trống trong một phần thời gian đo và đứng trước camera trong phần còn lại. Sau khi chạy, script sinh các file \texttt{summary.json}, \texttt{summary.md}, \texttt{summary\_table.tex} và \texttt{frames.csv}. File \texttt{summary\_table.tex} có thể dùng để điền bảng benchmark trong chương kết quả.
+
+\subsection{Trích đoạn mã nguồn quan trọng}
+
+\subsubsection{FastAPI entrypoint}
+\lstinputlisting[
+    language=Python,
+    firstline=96,
+    lastline=172,
+    caption={FastAPI app, lifespan và API chính trong \texttt{backend/main.py}},
+    label={lst:backend_main}
+]{../backend/main.py}
+
+\subsubsection{Camera router cache}
+\lstinputlisting[
+    language=Python,
+    firstline=37,
+    lastline=124,
+    caption={Cache frame mới nhất trong \texttt{backend/routers/get\_camera.py}},
+    label={lst:get_camera}
+]{../backend/routers/get_camera.py}
+
+\subsubsection{Camera worker}
+\lstinputlisting[
+    language=Python,
+    firstline=85,
+    lastline=207,
+    caption={Vòng lặp xử lý camera trong \texttt{backend/services/local\_camera.py}},
+    label={lst:local_camera_loop}
+]{../backend/services/local_camera.py}
+
+\subsubsection{Face detection và recognition}
+\lstinputlisting[
+    language=Python,
+    firstline=75,
+    lastline=160,
+    caption={Phân tích khuôn mặt trong \texttt{backend/services/face\_detection.py}},
+    label={lst:face_detection_analyze}
+]{../backend/services/face_detection.py}
+
+\subsubsection{Registration quality filter}
+\lstinputlisting[
+    language=Python,
+    firstline=161,
+    lastline=225,
+    caption={Lọc chất lượng ảnh đăng ký trong \texttt{backend/services/face\_detection.py}},
+    label={lst:registration_quality}
+]{../backend/services/face_detection.py}
+
+\subsubsection{Fuzzy decision wrapper}
+\lstinputlisting[
+    language=Python,
+    firstline=49,
+    lastline=109,
+    caption={Wrapper đánh giá fuzzy trong \texttt{backend/services/fuzzy\_logic.py}},
+    label={lst:fuzzy_wrapper}
+]{../backend/services/fuzzy_logic.py}
+
+\subsubsection{Fuzzy controller rule base}
+\lstinputlisting[
+    language=Python,
+    firstline=115,
+    lastline=192,
+    caption={Tập luật fuzzy trong \texttt{backend/infra/fuzzy\_controller.py}},
+    label={lst:fuzzy_rules}
+]{../backend/infra/fuzzy_controller.py}
+
+\subsubsection{Keypad và servo}
+\lstinputlisting[
+    language=Python,
+    firstline=194,
+    lastline=257,
+    caption={Quét keypad trong \texttt{backend/services/hardware\_io.py}},
+    label={lst:hardware_pin_servo}
+]{../backend/services/hardware_io.py}
+
+\subsubsection{Frontend live stream}
+\lstinputlisting[
+    language=Java,
+    firstline=72,
+    lastline=139,
+    caption={Polling frame trong \texttt{frontend/src/components/LiveVideoStream.tsx}},
+    label={lst:frontend_polling}
+]{../frontend/src/components/LiveVideoStream.tsx}
+
+\subsubsection{Đổi mật khẩu keypad}
+\lstinputlisting[
+    language=Java,
+    firstline=50,
+    lastline=64,
+    caption={Request đổi mật khẩu trong \texttt{frontend/src/components/PasswordChange.tsx}},
+    label={lst:password_change}
+]{../frontend/src/components/PasswordChange.tsx}

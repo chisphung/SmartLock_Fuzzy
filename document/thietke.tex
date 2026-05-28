@@ -1,0 +1,244 @@
+\section{Thiết kế hệ thống}
+
+\subsection{Kiến trúc tổng quan}
+
+SmartLock Fuzzy được thiết kế theo mô hình backend trung tâm. Backend sở hữu camera và phần cứng, còn frontend chỉ đóng vai trò giao diện quan sát/điều khiển qua HTTP API với FastAPI và Next.js \cite{fastapi,nextjs}.
+
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    block/.style={
+        draw,
+        rounded corners,
+        minimum width=3.3cm,
+        minimum height=0.9cm,
+        align=center
+    },
+    hw/.style={
+        draw,
+        rounded corners,
+        minimum width=3.0cm,
+        minimum height=0.85cm,
+        align=center
+    },
+    data/.style={thick, -{Stealth}},
+    http/.style={thick, {Stealth}-{Stealth}},
+    ctrl/.style={thick, dashed, -{Stealth}},
+    lab/.style={
+        font=\scriptsize,
+        fill=white,
+        inner sep=1.5pt
+    }
+]
+
+% ---------------- Nodes ----------------
+\node[hw]    (cam)          at (0,  1.4) {Camera\\\texttt{/dev/video0}};
+\node[hw]    (hardware)     at (0, -1.4) {Keypad/OLED/Servo\\GPIO + SPI + PWM};
+
+\node[block] (worker)       at (4.2, 0) {\texttt{LocalCameraWorker}\\vòng lặp xử lý};
+
+\node[block] (api)          at (8.5, 1.4) {FastAPI\\REST endpoints};
+\node[block] (front)        at (12.7, 1.4) {Next.js Dashboard\\polling HTTP};
+
+\node[block] (vision)       at (8.5, -0.4) {OpenCV\\Haar + LBPH};
+\node[block] (fuzzy)        at (8.5, -2.2) {Fuzzy Controller\\Mamdani rules};
+
+\node[block] (registration) at (4.2, -2.2) {Registration Manager\\thu mẫu + train LBPH};
+
+% ---------------- Data flow ----------------
+\draw[data] (cam.east) -- node[lab, above] {frame} (worker.west);
+
+\draw[data] (worker.north east) -- node[lab, above] {latest frame/status} (api.west);
+\draw[http] (api.east) -- node[lab, above] {GET/POST} (front.west);
+
+\draw[data] (worker.east) -- node[lab, above] {frame} (vision.west);
+\draw[data] (vision.south) -- node[lab, right] {detection} (fuzzy.north);
+
+\draw[data] (worker.south) -- node[lab, right] {samples} (registration.north);
+
+% ---------------- Hardware control ----------------
+\draw[ctrl] (worker.south west) to[bend right=15]
+    node[lab, left] {unlock/status} (hardware.east);
+
+\draw[ctrl] (hardware.east) to[bend right=15]
+    node[lab, below] {keypad event} (worker.west);
+
+\end{tikzpicture}
+}
+\caption{Kiến trúc tổng quan của hệ thống SmartLock Fuzzy}
+\label{fig:system_architecture}
+\end{figure}
+
+Các thành phần chính:
+
+\begin{itemize}
+    \item \textbf{Backend FastAPI}: quản lý vòng đời hệ thống, API và worker camera.
+    \item \textbf{Camera worker}: xử lý frame, nhận diện, đánh giá fuzzy và cập nhật trạng thái mới nhất.
+    \item \textbf{Service xử lý ảnh}: đóng gói Haar Cascade, LBPH và các phép đo chất lượng khuôn mặt.
+    \item \textbf{Service fuzzy}: ánh xạ kết quả nhận diện thành quyết định truy cập.
+    \item \textbf{Service phần cứng}: điều khiển keypad, OLED và servo.
+    \item \textbf{Frontend}: dashboard web để quan sát camera, đăng ký người dùng và đổi mật khẩu.
+\end{itemize}
+
+\subsection{Luồng xử lý camera}
+
+Mỗi frame đi qua các bước sau:
+
+\begin{enumerate}
+    \item Đọc frame từ camera bằng OpenCV \cite{opencv}.
+    \item Lật ảnh nếu biến môi trường \texttt{CAMERA\_FLIP} được bật.
+    \item Phát hiện khuôn mặt bằng Haar Cascade \cite{viola2001}.
+    \item Nếu có nhiều khuôn mặt, giữ khuôn mặt có bounding box lớn nhất.
+    \item Nhận diện bằng LBPH nếu model đã được nạp \cite{lbph2006}.
+    \item Tính độ sáng ROI và góc lệch tương đối.
+    \item Đưa detection đầu tiên vào bộ fuzzy để tính \texttt{security\_risk}.
+    \item Nếu hành động là \texttt{unlock} và keypad không hoạt động, kích hoạt servo mở khóa.
+    \item Xử lý đăng ký khuôn mặt nếu đang có session đăng ký.
+    \item Vẽ overlay, mã hóa JPEG base64 và cập nhật cache API.
+\end{enumerate}
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >=Stealth,
+    node distance=0.85cm,
+    step/.style={draw, rounded corners, minimum width=3.0cm, minimum height=0.8cm, align=center, font=\small},
+    arrow/.style={thick, -{Stealth}}
+]
+    \node[step] (read) {Đọc frame};
+    \node[step, right=of read] (detect) {Haar detect};
+    \node[step, right=of detect] (lbph) {LBPH recognize};
+    \node[step, right=of lbph] (quality) {Đo sáng/góc};
+    \node[step, below=of quality] (fuzzy) {Fuzzy risk};
+    \node[step, left=of fuzzy] (action) {Quyết định};
+    \node[step, left=of action] (encode) {Overlay + JPEG};
+    \node[step, left=of encode] (api) {API cache};
+
+    \draw[arrow] (read) -- (detect);
+    \draw[arrow] (detect) -- (lbph);
+    \draw[arrow] (lbph) -- (quality);
+    \draw[arrow] (quality) -- (fuzzy);
+    \draw[arrow] (fuzzy) -- (action);
+    \draw[arrow] (action) -- (encode);
+    \draw[arrow] (encode) -- (api);
+\end{tikzpicture}
+}
+\caption{Pipeline xử lý một frame camera}
+\label{fig:camera_pipeline}
+\end{figure}
+
+\subsection{Thiết kế API}
+
+Backend cung cấp các endpoint chính sau:
+
+\begin{table}[H]
+\centering
+\caption{Danh sách endpoint của hệ thống}
+\label{tab:api_endpoints}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Method} & \textbf{Endpoint} & \textbf{Chức năng} \\
+\hline
+GET & \texttt{/health} & Kiểm tra backend còn hoạt động. \\
+\hline
+GET & \texttt{/camera/status} & Trạng thái camera worker, đăng ký và phần cứng. \\
+\hline
+GET & \texttt{/api/v1/camera/frame} & Metadata và frame JPEG base64 mới nhất. \\
+\hline
+GET & \texttt{/api/v1/camera/latest} & Metadata mới nhất, không kèm frame base64. \\
+\hline
+GET & \texttt{/api/v1/camera/history} & Lịch sử kết quả gần nhất. \\
+\hline
+POST & \texttt{/api/v1/register/start} & Bắt đầu thu mẫu đăng ký khuôn mặt. \\
+\hline
+POST & \texttt{/api/v1/register/cancel} & Hủy session đăng ký hiện tại. \\
+\hline
+GET & \texttt{/api/v1/register/status} & Lấy tiến trình đăng ký. \\
+\hline
+POST & \texttt{/api/v1/keypad/password} & Đổi mã PIN 6 chữ số. \\
+\hline
+GET & \texttt{/api/v1/keypad/status} & Lấy trạng thái keypad và lockout. \\
+\hline
+\end{tabularx}
+\end{table}
+
+Cache camera mới nhất được lưu trong module router và bảo vệ bằng \texttt{threading.Lock}. Cách này đơn giản, đủ dùng cho một backend cục bộ phục vụ dashboard.
+
+\subsection{Thiết kế fuzzy decision}
+
+Bộ fuzzy nhận detection đầu tiên. Nếu không có detection, hệ thống trả về \texttt{deny}. Nếu danh tính là \texttt{Unknown}, độ tin cậy mô hình được đặt bằng 0. Với người nhận diện được, khoảng cách LBPH được scale thành \texttt{model\_confidence}. Bộ fuzzy dùng 13 luật theo hướng Mamdani \cite{mamdani1975}:
+
+\begin{itemize}
+    \item LOW confidence luôn dẫn tới MAXIMUM risk.
+    \item HIGH confidence, ánh sáng NORMAL và mặt FRONTAL dẫn tới MINIMUM risk.
+    \item HIGH confidence nhưng ánh sáng/góc không tối ưu dẫn tới AVERAGE risk.
+    \item MEDIUM confidence chỉ được xem là AVERAGE risk trong một số điều kiện thuận lợi; các điều kiện xấu tăng lên MAXIMUM risk.
+\end{itemize}
+
+Khi thư viện fuzzy không khả dụng, \texttt{services/fuzzy\_logic.py} có fallback logic tĩnh để backend không bị dừng. Fallback vẫn giữ nguyên tinh thần fail-safe: thiếu tin cậy thì rủi ro cao.
+
+\subsection{Thiết kế đăng ký khuôn mặt}
+
+Đăng ký khuôn mặt là một session có trạng thái. Người dùng nhập tên trên dashboard, backend tạo thư mục tương ứng trong \texttt{registered\_faces/}. Mỗi frame được kiểm tra chất lượng trước khi lưu:
+
+\begin{itemize}
+    \item Chỉ chấp nhận đúng một khuôn mặt.
+    \item Kích thước khuôn mặt đủ lớn.
+    \item Độ sáng trong khoảng an toàn.
+    \item Góc mặt không vượt ngưỡng.
+    \item Ảnh không quá mờ.
+    \item Mẫu mới phải khác mẫu trước đó đủ lớn để tránh lưu các frame trùng lặp.
+\end{itemize}
+
+Khi đủ số mẫu, backend huấn luyện lại LBPH, ghi file XML và JSON label map, sau đó reload recognizer mà không cần khởi động lại server.
+
+\subsection{Thiết kế phần cứng}
+
+Bảng sau mô tả mapping GPIO mặc định:
+
+\begin{table}[H]
+\centering
+\caption{Kết nối phần cứng Raspberry Pi}
+\label{tab:hardware_pins}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Thiết bị} & \textbf{Chức năng} & \textbf{GPIO BCM} \\
+\hline
+Keypad 4x4 & Row 1--4 & 17, 27, 22, 5 \\
+\hline
+Keypad 4x4 & Col 1--4 & 6, 13, 19, 26 \\
+\hline
+Servo & PWM signal & 18 \\
+\hline
+OLED SSD1306 SPI & DC, RST & 24, 25 \\
+\hline
+OLED SSD1306 SPI & MOSI, SCLK, CE0 & 10, 11, 8 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \todoimage{Chèn ảnh mạch thực tế hoặc sơ đồ nối dây Raspberry Pi, keypad, OLED và servo}
+    \caption{Sơ đồ/ảnh lắp đặt phần cứng}
+    \label{fig:hardware_photo_todo}
+\end{figure}
+
+Keypad sử dụng interrupt trên các cột để tránh polling liên tục. Servo được điều khiển bằng PWM, sau đó duty cycle được đưa về 0 để giảm rung. OLED được render bằng Pillow trước khi gửi qua SPI qua thư viện luma.oled \cite{lumaoled}.
+
+\subsection{Thiết kế frontend}
+
+Frontend Next.js gồm ba thành phần chính:
+
+\begin{itemize}
+    \item \texttt{Header}: tiêu đề và trạng thái dashboard.
+    \item \texttt{LiveVideoStream}: polling frame, hiển thị camera, thông tin nhận diện, fuzzy risk và form đăng ký.
+    \item \texttt{PasswordChange}: đổi mật khẩu keypad, kiểm tra độ dài 6 chữ số và gửi API.
+\end{itemize}
+
+Frontend đọc biến môi trường \texttt{NEXT\_PUBLIC\_API\_URL}, mặc định là \texttt{http://localhost:8000}. Dashboard polling frame mỗi 250 ms, phù hợp cho demo live view cục bộ.

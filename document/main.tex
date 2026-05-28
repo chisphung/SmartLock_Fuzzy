@@ -1,0 +1,151 @@
+\documentclass[12pt,a4paper]{article}
+
+% =============================
+% XeLaTeX + Unicode
+% =============================
+\usepackage{fontspec}
+\usepackage{polyglossia}
+\setdefaultlanguage{vietnamese}
+
+
+
+% Font chữ: ưu tiên font có hỗ trợ đầy đủ tiếng Việt.
+% =============================
+% Font chữ: Latin Modern
+% =============================
+\setmainfont{Latin Modern Roman}
+\setsansfont{Latin Modern Sans}
+\setmonofont{Latin Modern Mono}
+
+% =============================
+% Packages cơ bản
+% =============================
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, calc, shapes.geometric, automata, backgrounds, fit}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{tabularx}
+\usepackage[table]{xcolor}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\graphicspath{{./}{asset/}}
+\usepackage{titlesec}
+\usepackage{ragged2e}
+\usepackage{etoolbox}
+\usepackage{xurl}
+\usepackage{pdfpages}
+\usetikzlibrary{fit}
+% =============================
+% Canh lề
+% =============================
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\usepackage[a4paper,margin=2.5cm]{geometry}
+
+% =============================
+% Thụt đầu dòng
+% =============================
+\setlength{\parindent}{1.27cm}
+\usepackage{indentfirst}
+
+% =============================
+% Giãn dòng
+% =============================
+
+\usepackage{setspace}
+\onehalfspacing
+
+
+\titleformat{\section}
+  {\normalfont\Large\bfseries}{\thesection}{0.75em}{}
+\titleformat{\subsection}
+  {\normalfont\large\bfseries}{\thesubsection}{0.75em}{}
+\titleformat{\subsubsection}
+  {\normalfont\normalsize\bfseries}{\thesubsubsection}{0.75em}{}
+\titlespacing*{\section}{0pt}{18pt}{12pt}
+\titlespacing*{\subsection}{0pt}{14pt}{8pt}
+\titlespacing*{\subsubsection}{0pt}{10pt}{6pt}
+
+\setcounter{secnumdepth}{4}
+\setcounter{tocdepth}{2}
+
+% =============================
+% List
+% =============================
+\usepackage{enumitem}
+\setlist[itemize,1]{label=\textbullet}
+\setlist[itemize,2]{label=$\circ$}
+\setlist[itemize]{leftmargin=1.5em}
+
+% =============================
+% Hyperref
+% =============================
+\usepackage{hyperref}
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=cyan
+}
+\usepackage{listings}
+
+% Định nghĩa màu sắc cho giống các trình soạn thảo code HDL
+\definecolor{vgreen}{RGB}{0,120,0}
+\definecolor{vblue}{RGB}{0,0,255}
+\definecolor{vorange}{RGB}{255,150,0}
+
+\lstset{
+    language=Python,
+    basicstyle=\small\ttfamily,
+    keywordstyle=\color{vblue}\bfseries,
+    commentstyle=\color{vgreen},
+    stringstyle=\color{vorange},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1,
+    frame=single,
+    breaklines=true,
+    tabsize=4
+}
+
+\newcommand{\todoimage}[2][0.9\textwidth]{%
+    \fbox{%
+        \begin{minipage}[c][4cm][c]{#1}
+            \centering
+            \textbf{TODO:} #2
+        \end{minipage}%
+    }%
+}
+
+\begin{document}
+
+% ===== FRONT MATTER =====
+\input{cover}
+
+\input{tomtat}
+
+\tableofcontents
+\clearpage
+\listoffigures
+\clearpage
+\listoftables
+\clearpage
+
+% ===== CHAPTERS =====
+\input{motadoan}
+
+\input{cosoly}
+\input{thietke}
+\input{hienthuctrenverilog}
+\input{ketqua}
+\input{ketluan}
+
+% ===== REFERENCES =====
+\input{references}
+
+% ===== APPENDIX =====
+\input{appendix}
+
+\end{document}

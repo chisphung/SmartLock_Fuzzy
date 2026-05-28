@@ -1,0 +1,57 @@
+\section{Tổng quan đề tài}
+
+\subsection{Lý do chọn đề tài}
+
+Trong bối cảnh các hệ thống thông tin ngày càng phát triển, nhu cầu tự động nhận diện và quản lý danh tính người dùng từ dữ liệu hình ảnh ngày càng trở nên quan trọng. Các phương pháp truyền thống như mật khẩu hoặc mã định danh tồn tại nhiều hạn chế, từ đó thúc đẩy sự phát triển của các phương pháp sinh trắc học, trong đó khuôn mặt là đặc trưng nổi bật nhờ tính tự nhiên và dễ sử dụng.
+
+
+Các hệ thống kiểm soát ra vào truyền thống thường dựa trên chìa khóa cơ, thẻ từ hoặc mã PIN. Những phương pháp này dễ triển khai nhưng tồn tại nhiều hạn chế: chìa khóa có thể bị mất, thẻ có thể bị sao chép, còn mã PIN có thể bị lộ nếu người dùng thao tác trong môi trường không an toàn. Trong khi đó, camera và các bộ xử lý nhúng như Raspberry Pi ngày càng phổ biến, cho phép triển khai nhận diện khuôn mặt trực tiếp tại biên với chi phí thấp \cite{raspberrypi}.
+
+Đề tài SmartLock Fuzzy được xây dựng nhằm kết hợp ba hướng kỹ thuật:
+
+\begin{itemize}
+    \item \textbf{Thị giác máy tính cục bộ}: camera được xử lý bằng OpenCV ngay trên thiết bị, không cần gửi ảnh lên máy chủ ngoài \cite{opencv}.
+    \item \textbf{Ra quyết định bằng fuzzy logic}: thay vì chỉ dựa vào một ngưỡng cứng của mô hình nhận diện, hệ thống xét thêm điều kiện ánh sáng và góc mặt để đánh giá rủi ro \cite{zadeh1965}.
+    \item \textbf{Tích hợp phần cứng nhúng}: keypad, OLED và servo giúp hệ thống hoạt động như một khóa cửa hoàn chỉnh chứ không chỉ là phần mềm demo.
+\end{itemize}
+
+Việc kết hợp nhận diện khuôn mặt với fuzzy logic phù hợp với bài toán khóa cửa vì dữ liệu camera luôn chịu ảnh hưởng của môi trường. Một khuôn mặt đúng người nhưng quá tối, quá sáng hoặc quay lệch nhiều không nên được xử lý giống như một khuôn mặt rõ, nhìn thẳng và có độ tin cậy cao.
+
+\subsection{Mục tiêu đề tài}
+
+Đề tài đặt ra các mục tiêu chính sau:
+
+\begin{enumerate}
+    \item Xây dựng backend FastAPI đọc camera cục bộ và cung cấp API cho frontend.
+    \item Phát hiện khuôn mặt bằng Haar Cascade và nhận diện danh tính bằng LBPH.
+    \item Ước lượng các đặc trưng hỗ trợ quyết định gồm độ sáng khuôn mặt, góc lệch tương đối và độ tin cậy nhận diện.
+    \item Thiết kế bộ điều khiển fuzzy logic để ánh xạ các đặc trưng đầu vào thành mức rủi ro truy cập.
+    \item Tích hợp keypad 4x4, OLED SSD1306 và servo trên Raspberry Pi.
+    \item Xây dựng giao diện Next.js để quan sát camera, đăng ký khuôn mặt và đổi mật khẩu keypad.
+    \item Cung cấp script huấn luyện/đánh giá mô hình và công cụ benchmark pipeline.
+\end{enumerate}
+
+\subsection{Phương pháp thực hiện}
+
+Quy trình thực hiện được chia thành các giai đoạn:
+
+\begin{enumerate}
+    \item \textbf{Khảo sát và thiết kế kiến trúc}: xác định các thành phần backend, frontend, xử lý ảnh, fuzzy logic và phần cứng.
+    \item \textbf{Xây dựng pipeline camera}: đọc frame từ camera, phát hiện khuôn mặt, nhận diện bằng LBPH và mã hóa ảnh JPEG để gửi lên dashboard.
+    \item \textbf{Thiết kế bộ fuzzy}: định nghĩa biến ngôn ngữ, hàm thành viên Gaussian, tập luật Mamdani và ngưỡng ánh xạ hành động.
+    \item \textbf{Tích hợp đăng ký khuôn mặt}: thu thập mẫu hợp lệ, lọc ảnh mờ/thiếu sáng/góc lệch, huấn luyện lại mô hình LBPH và nạp lại model khi chạy.
+    \item \textbf{Tích hợp phần cứng}: quét keypad bằng interrupt, điều khiển servo bằng PWM và cập nhật trạng thái OLED.
+    \item \textbf{Xây dựng giao diện web}: dashboard hiển thị live camera, trạng thái fuzzy, thông tin nhận diện và form đổi mật khẩu.
+    \item \textbf{Kiểm chứng}: kiểm tra từng module bằng script, benchmark pipeline và chạy thử trên môi trường có camera/phần cứng.
+\end{enumerate}
+
+\subsection{Phạm vi đề tài}
+
+\begin{itemize}
+    \item Hệ thống tập trung vào mô hình khóa cửa một camera, một người dùng thao tác tại một thời điểm.
+    \item Nhận diện khuôn mặt dùng LBPH, phù hợp triển khai nhẹ trên thiết bị nhúng; đề tài không sử dụng mô hình deep learning nặng.
+    \item Backend mặc định đọc camera từ \texttt{/dev/video0}; 
+    \item Phần cứng mục tiêu là Raspberry Pi 4 Model B với keypad ma trận 4x4, OLED SSD1306 SPI và servo.
+    \item Mật khẩu keypad được lưu trong RAM dưới dạng SHA-256 trong phiên chạy hiện tại; chưa có cơ chế lưu bền vững sau khi khởi động lại.
+    \item Báo cáo chưa thay thế kiểm thử an toàn bảo mật chuyên nghiệp cho sản phẩm thương mại.
+\end{itemize}

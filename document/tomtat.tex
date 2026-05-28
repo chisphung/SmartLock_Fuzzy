@@ -1,0 +1,9 @@
+\section*{Tóm tắt}
+\addcontentsline{toc}{section}{Tóm tắt}
+
+Báo cáo trình bày quá trình xây dựng hệ thống khóa cửa thông minh \textbf{SmartLock Fuzzy}. Hệ thống sử dụng camera cục bộ để phát hiện và nhận diện khuôn mặt, kết hợp mô hình suy luận mờ Mamdani để đánh giá mức rủi ro truy cập. Kết quả suy luận được dùng để quyết định mở khóa, yêu cầu xác thực bổ sung, từ chối truy cập hoặc khóa tạm thời. Bên cạnh nhận diện khuôn mặt, hệ thống còn hỗ trợ xác thực bằng mã PIN qua keypad ma trận, hiển thị trạng thái trên màn hình OLED và điều khiển chốt khóa bằng servo.
+
+Phần mềm được chia thành hai khối chính. Backend FastAPI chạy trên thiết bị cục bộ, trực tiếp đọc camera, xử lý ảnh bằng OpenCV, quản lý đăng ký khuôn mặt, điều khiển phần cứng Raspberry Pi và cung cấp API cho giao diện web. Frontend Next.js hiển thị luồng camera, kết quả nhận diện, mức rủi ro fuzzy, tiến trình đăng ký khuôn mặt và giao diện đổi mật khẩu keypad. Toàn bộ pipeline được thiết kế theo hướng hoạt động cục bộ, hạn chế phụ thuộc cloud và phù hợp với bối cảnh hệ thống nhúng.
+
+Báo cáo tập trung mô tả kiến trúc, thuật toán, thiết kế API, luồng xử lý thời gian thực, giao tiếp phần cứng và các điểm cần kiểm chứng thực nghiệm. 
+\clearpage

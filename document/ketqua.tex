@@ -1,0 +1,156 @@
+\section{Kết quả và đánh giá}
+
+\subsection{Kết quả hiện thực}
+
+Các thành phần chính của hệ thống đã được hiện thực trong repository:
+
+\begin{table}[H]
+\centering
+\caption{Trạng thái hiện thực các thành phần}
+\label{tab:implementation_status}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Thành phần} & \textbf{Trạng thái} & \textbf{Ghi chú} \\
+\hline
+Backend FastAPI & Hoàn thành & Có lifecycle, CORS, logging và endpoint chính. \\
+\hline
+Camera worker & Hoàn thành & Đọc camera, xử lý frame, cập nhật API cache. \\
+\hline
+Face detection & Hoàn thành & Haar Cascade, chọn khuôn mặt lớn nhất. \\
+\hline
+Face recognition & Hoàn thành & LBPH model, label map JSON, reload model sau đăng ký. \\
+\hline
+Fuzzy logic & Hoàn thành & Mamdani fuzzy bằng fuzzylite và fallback logic. \\
+\hline
+Đăng ký khuôn mặt & Hoàn thành & Thu mẫu, lọc chất lượng, train lại LBPH. \\
+\hline
+Keypad/OLED/Servo & Hoàn thành mức code & Cần kiểm chứng lại trên phần cứng thực tế. \\
+\hline
+Frontend dashboard & Hoàn thành & Live frame polling, registration, password change. \\
+\hline
+Benchmark utility & Có sẵn & Cần chạy và chèn log số liệu cuối cùng. \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Kết quả API}
+
+Khi backend chạy, Swagger UI tại \texttt{/docs} có thể dùng để kiểm thử API. Các response camera có dạng:
+
+\begin{lstlisting}[language=Python, caption={Các trường chính trong response camera}]
+{
+    "success": true,
+    "mode": "smart_lock",
+    "faces_count": 1,
+    "detections": [...],
+    "timestamp": "...",
+    "camera_id": "local_v4l2",
+    "fuzzy": {...},
+    "registration": {...},
+    "frame_base64": "..."
+}
+\end{lstlisting}
+
+Endpoint \texttt{/api/v1/camera/latest} bỏ qua \texttt{frame\_base64}, phù hợp với trường hợp chỉ cần metadata nhẹ.
+
+\subsection{Kết quả fuzzy logic}
+
+Bộ fuzzy trả về bốn nhóm hành động. Bảng sau mô tả ý nghĩa trong hệ thống:
+
+\begin{table}[H]
+\centering
+\caption{Ý nghĩa hành động fuzzy trong hệ thống}
+\label{tab:fuzzy_action_result}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{Action} & \textbf{Xử lý} \\
+\hline
+\texttt{unlock} & OLED hiển thị access granted và servo mở khóa nếu keypad không đang hoạt động. \\
+\hline
+\texttt{otp} & Hiện tại được ghi nhận là trạng thái yêu cầu xác thực bổ sung; phần OTP thực tế chưa được triển khai. \\
+\hline
+\texttt{deny} & Từ chối truy cập, vẫn hiển thị thông tin nhận diện/rủi ro. \\
+\hline
+\texttt{lockout} & Đánh dấu rủi ro cao; có thể mở rộng thành cảnh báo hoặc khóa hệ thống. \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Kết quả giao diện}
+
+Frontend hiển thị được:
+
+\begin{itemize}
+    \item trạng thái live/disconnected,
+    \item frame camera mới nhất,
+    \item số khuôn mặt,
+    \item danh tính nhận diện,
+    \item hành động fuzzy và phần trăm rủi ro,
+    \item thông số LBPH distance, illumination và facial angle,
+    \item form đăng ký khuôn mặt,
+    \item form đổi mật khẩu keypad.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\linewidth]{dashboard_nextjs.png}
+    \caption{Kết quả giao diện live face recognition trên dashboard}
+    \label{fig:frontend_result}
+\end{figure}
+
+\subsection{Kết quả phần cứng}
+
+Code phần cứng đã bao gồm keypad interrupt, lockout, OLED screen và servo anti-jitter. Tuy nhiên, repository hiện tại chưa kèm ảnh lắp mạch và log chạy thực tế trên Raspberry Pi. Khi bổ sung kết quả, cần chèn:
+
+\begin{itemize}
+    \item ảnh nối dây Raspberry Pi với keypad/OLED/servo,
+    \item ảnh OLED ở các trạng thái Ready, Enter PIN, Access Granted và Lockout,
+    \item video hoặc ảnh servo mở/đóng khóa,
+    \item log backend khi unlock bằng mặt và bằng keypad.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \todoimage{Chèn ảnh OLED/keypad/servo chạy trên Raspberry Pi}
+    \caption{Kết quả kiểm thử phần cứng}
+    \label{fig:hardware_result_todo}
+\end{figure}
+
+\subsection{Benchmark và giới hạn kiểm chứng}
+
+Script \texttt{backend/benchmark\_pipeline.py} có thể chạy benchmark không cần phần cứng thật nhờ mock các module GPIO/OLED. Báo cáo này chưa chèn số liệu benchmark cuối cùng vì môi trường hiện tại chưa chạy pipeline đầy đủ với dependency và model thực tế. Khi chạy xong, cần bổ sung bảng:
+
+\begin{table}[H]
+\centering
+\caption{Bảng benchmark cần bổ sung sau khi chạy trên thiết bị}
+\label{tab:benchmark_todo}
+\begin{tabular}{|l|c|c|}
+\hline
+\textbf{Chỉ số} & \textbf{Không có mặt} & \textbf{Có mặt} \\
+\hline
+Face detection latency & TODO & TODO \\
+\hline
+Face recognition latency & TODO & TODO \\
+\hline
+Fuzzy decision latency & TODO & TODO \\
+\hline
+JPEG encode latency & TODO & TODO \\
+\hline
+Total pipeline latency & TODO & TODO \\
+\hline
+RAM usage & TODO & TODO \\
+\hline
+CPU utilization & TODO & TODO \\
+\hline
+\end{tabular}
+\end{table}
+
+Các giới hạn hiện tại:
+
+\begin{itemize}
+    \item LBPH nhạy với điều kiện ánh sáng và chất lượng dữ liệu đăng ký.
+    \item Fuzzy angle estimation chỉ dựa trên bất đối xứng sáng, chưa phải ước lượng pose thật.
+    \item Mật khẩu keypad chưa được lưu bền vững qua các lần restart.
+    \item CORS đang mở \texttt{allow\_origins=["*"]}, phù hợp demo nhưng cần siết lại nếu triển khai thật.
+    \item Chưa có authentication cho API quản trị như đăng ký khuôn mặt hoặc đổi PIN.
+\end{itemize}

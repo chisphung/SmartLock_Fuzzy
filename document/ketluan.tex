@@ -1,0 +1,32 @@
+\section{Kết luận}
+
+\subsection{Kết quả đạt được}
+
+Đề tài đã xây dựng được một hệ thống khóa cửa thông minh hoàn chỉnh ở mức prototype. Backend có thể đọc camera cục bộ, phát hiện khuôn mặt, nhận diện bằng LBPH, đánh giá rủi ro bằng fuzzy logic và cung cấp API cho dashboard. Hệ thống cũng hỗ trợ đăng ký khuôn mặt mới, huấn luyện lại model LBPH, đổi mật khẩu keypad và điều khiển phần cứng Raspberry Pi gồm keypad, OLED và servo.
+
+Về mặt kiến trúc, hệ thống được tổ chức rõ thành các service độc lập: xử lý ảnh, fuzzy decision, đăng ký, camera worker, phần cứng và frontend. Cách chia này giúp dễ debug, dễ thay thế từng thành phần và phù hợp cho việc mở rộng sau này.
+
+\subsection{Hạn chế}
+
+\begin{itemize}
+    \item Nhận diện LBPH còn phụ thuộc mạnh vào chất lượng mẫu đăng ký và điều kiện ánh sáng.
+    \item Hệ thống mới xử lý một khuôn mặt lớn nhất, chưa hỗ trợ tình huống nhiều người đứng trước camera.
+    \item OTP mới tồn tại ở mức action fuzzy, chưa có module gửi/kiểm tra OTP thật.
+    \item API quản trị chưa có cơ chế xác thực người dùng.
+    \item Mật khẩu keypad chưa được lưu vào file cấu hình hoặc cơ sở dữ liệu bền vững.
+    \item Báo cáo cần bổ sung thêm ảnh phần cứng, ảnh dashboard và số liệu benchmark thực tế.
+\end{itemize}
+
+\subsection{Hướng phát triển}
+
+\begin{itemize}
+    \item Thay LBPH bằng mô hình embedding nhẹ như FaceNet/MobileFaceNet nếu thiết bị đủ tài nguyên.
+    \item Bổ sung cơ chế lưu mật khẩu bền vững kèm salt thay vì chỉ SHA-256 trực tiếp.
+    \item Thêm xác thực cho các API đăng ký và đổi mật khẩu.
+    \item Hoàn thiện luồng OTP hoặc xác thực hai yếu tố thật.
+    \item Lưu lịch sử truy cập vào SQLite hoặc một hệ thống log có cấu trúc.
+    \item Chạy benchmark trên Raspberry Pi thật để chốt FPS, độ trễ và tài nguyên.
+    \item Thêm test tự động cho registration, fuzzy decision, API schema và hardware mock.
+\end{itemize}
+
+\clearpage

@@ -1,0 +1,753 @@
+\section{Hiện thực hệ thống}
+
+Chương này mô tả chi tiết phần hiện thực của SmartLock Fuzzy dựa trên mã nguồn hiện có trong repository. Khác với chương thiết kế, nội dung bên dưới tập trung vào cách các module được cài đặt, cách dữ liệu đi qua từng lớp, các biến môi trường, cấu trúc JSON, cơ chế đồng bộ thread và các ngưỡng được dùng trong code.
+
+\subsection{Cấu trúc hiện thực tổng quát}
+
+Hệ thống được chia thành ba khối hiện thực chính:
+
+\begin{itemize}
+    \item \textbf{Backend Python}: FastAPI, camera worker, xử lý ảnh OpenCV, fuzzy logic, đăng ký khuôn mặt và phần cứng.
+    \item \textbf{Frontend Next.js}: dashboard web để xem camera, trạng thái fuzzy, đăng ký khuôn mặt và đổi mã PIN.
+    \item \textbf{Script hỗ trợ}: huấn luyện, benchmark, đánh giá detector và kiểm tra phần cứng.
+\end{itemize}
+
+Các module backend quan trọng được đặt dưới thư mục \texttt{backend/}. Trong đó, \texttt{main.py} là entrypoint của API, \texttt{services/local\_camera.py} điều phối luồng camera, \texttt{services/face\_detection.py} đóng gói Haar Cascade và LBPH, \texttt{services/registration.py} quản lý đăng ký khuôn mặt, \texttt{infra/fuzzy\_controller.py} hiện thực bộ fuzzy Mamdani, \texttt{services/hardware\_io.py} điều khiển keypad/servo và \texttt{services/oled\_display.py} điều khiển OLED.
+
+\begin{table}[H]
+\centering
+\caption{Các file hiện thực chính của backend}
+\label{tab:backend_implementation_files}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{File} & \textbf{Vai trò} \\
+\hline
+\texttt{backend/main.py} & Khởi tạo FastAPI, logging, CORS, lifespan và các endpoint cấp cao. \\
+\hline
+\texttt{backend/routers/get\_camera.py} & Lưu cache frame mới nhất, metadata, lịch sử nhận diện và endpoint đọc camera. \\
+\hline
+\texttt{backend/services/local\_camera.py} & Thread nền đọc camera, gọi nhận diện, fuzzy, đăng ký, OLED, servo và cập nhật API cache. \\
+\hline
+\texttt{backend/services/face\_detection.py} & Phát hiện mặt bằng Haar, nhận diện LBPH, đo illumination/facial angle và trích ROI đăng ký. \\
+\hline
+\texttt{backend/services/registration.py} & Thu mẫu khuôn mặt, lọc chất lượng, lưu ảnh mẫu và huấn luyện lại LBPH. \\
+\hline
+\texttt{backend/infra/fuzzy\_controller.py} & Xây dựng fuzzy engine bằng pyfuzzylite với 3 input, 1 output và 13 luật. \\
+\hline
+\texttt{backend/services/fuzzy\_logic.py} & Wrapper chuyển detection thành input fuzzy và fallback khi pyfuzzylite không khả dụng. \\
+\hline
+\texttt{backend/services/hardware\_io.py} & Điều khiển keypad interrupt-driven, xác thực PIN và servo unlock/lock. \\
+\hline
+\texttt{backend/services/oled\_display.py} & Render màn hình OLED SSD1306 128x64 bằng Pillow và luma.oled. \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Luồng dữ liệu runtime}
+
+Từ các module trên, luồng dữ liệu runtime có thể tóm tắt như sau:
+
+\begin{enumerate}
+    \item FastAPI lifespan khởi động \texttt{LocalCameraWorker}.
+    \item Worker mở camera, đọc frame, gọi \texttt{FaceDetection.analyze()}.
+    \item \texttt{FaceDetection} trả về detection gồm bbox, tên, LBPH distance, illumination và facial angle.
+    \item \texttt{SmartLockFuzzyDecision} chuyển detection thành \texttt{security\_risk} và \texttt{action}.
+    \item Nếu action là \texttt{unlock}, worker gọi \texttt{SmartLockHardware.unlock\_door()} trong thread riêng.
+    \item Nếu người dùng đang đăng ký, \texttt{FaceRegistrationManager} lọc ROI, lưu mẫu và huấn luyện lại model khi đủ mẫu.
+    \item Worker vẽ overlay, encode JPEG base64 và cập nhật \texttt{\_latest\_camera}.
+    \item Frontend polling \texttt{/api/v1/camera/frame}, hiển thị frame và metadata.
+    \item Keypad có thể mở khóa độc lập bằng PIN; sự kiện keypad được log và hiển thị OLED.
+\end{enumerate}
+
+Điểm đáng chú ý trong hiện thực là backend luôn là thành phần sở hữu tài nguyên vật lý. Frontend chỉ đóng vai trò giao diện HTTP. Cách chia trách nhiệm này giúp tránh xung đột truy cập camera/GPIO, đồng thời giúp pipeline xử lý ảnh và điều khiển khóa chạy ổn định trong một tiến trình backend duy nhất.
+
+\subsection{Backend FastAPI}
+
+\subsubsection{Khởi tạo ứng dụng}
+
+File \texttt{backend/main.py} là entrypoint của backend. File này thêm thư mục \texttt{backend/} vào \texttt{sys.path}, cấu hình logging, import FastAPI, khai báo Pydantic model cho request và đăng ký các endpoint. Backend sử dụng FastAPI \cite{fastapi} để tạo REST API cục bộ cho dashboard và các thao tác quản trị.
+
+Đối tượng FastAPI được khởi tạo với tên \texttt{SmartLock Face API}, version \texttt{1.0.0} và mô tả ngắn về các chức năng camera, đăng ký, nhận diện và quyết định fuzzy. Middleware CORS được cấu hình cho phép mọi origin, method và header. Cách cấu hình này phù hợp cho demo cục bộ vì frontend có thể chạy ở port khác với backend. Trong triển khai thật, danh sách origin nên được giới hạn.
+
+\subsubsection{Logging}
+
+Backend dùng \texttt{RotatingFileHandler} để ghi log lâu dài mà không làm file log tăng vô hạn. Nếu không cấu hình biến môi trường, log được ghi vào thư mục \texttt{backend/logs/}. Hai file log chính là:
+
+\begin{itemize}
+    \item \texttt{app.log}: log ứng dụng, bao gồm log từ backend, worker, xử lý ảnh, fuzzy và phần cứng.
+    \item \texttt{access.log}: log request của \texttt{uvicorn.access}.
+\end{itemize}
+
+Các biến môi trường phục vụ logging được liệt kê trong Bảng \ref{tab:logging_env}.
+
+\begin{table}[H]
+\centering
+\caption{Biến môi trường cấu hình logging}
+\label{tab:logging_env}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Biến} & \textbf{Mặc định} & \textbf{Ý nghĩa} \\
+\hline
+\texttt{SMARTLOCK\_LOG\_DIR} & \texttt{backend/logs} & Thư mục lưu log. \\
+\hline
+\texttt{SMARTLOCK\_LOG\_LEVEL} & \texttt{INFO} & Mức log của backend. \\
+\hline
+\texttt{SMARTLOCK\_LOG\_MAX\_BYTES} & 5242880 & Kích thước tối đa của mỗi file log trước khi rotate. \\
+\hline
+\texttt{SMARTLOCK\_LOG\_BACKUP\_COUNT} & 5 & Số file log cũ được giữ lại. \\
+\hline
+\texttt{SMARTLOCK\_CAPTURE\_STDOUT} & \texttt{true} & Chuyển \texttt{stdout}/\texttt{stderr} thành log để gom cả các lệnh \texttt{print}. \\
+\hline
+\end{tabularx}
+\end{table}
+
+Lớp nội bộ \texttt{\_StreamToLogger} được dùng để bắt các dòng ghi ra \texttt{stdout} và \texttt{stderr}. Đây là chi tiết quan trọng vì một số module đang dùng \texttt{print} để debug LBPH, fuzzy và keypad. Khi bật \texttt{SMARTLOCK\_CAPTURE\_STDOUT}, các dòng này vẫn được ghi vào log thay vì chỉ xuất hiện trên terminal.
+
+\subsubsection{Lifespan}
+
+Backend dùng \texttt{@asynccontextmanager} để quản lý vòng đời ứng dụng. Khi FastAPI khởi động, lifespan gọi \texttt{camera\_worker.start()}. Khi ứng dụng shutdown, lifespan gọi \texttt{camera\_worker.stop()} để dừng thread camera, release \texttt{VideoCapture}, dừng PWM, gỡ interrupt GPIO và tắt OLED.
+
+\begin{lstlisting}[language=Python, caption={Lifespan khởi động và dừng camera worker}]
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("Camera worker starting")
+    camera_worker.start()
+    yield
+    logger.info("Camera worker stopping")
+    camera_worker.stop()
+\end{lstlisting}
+
+Cách triển khai này đảm bảo camera và phần cứng được cấp phát đúng thời điểm, đồng thời tránh việc mở camera ngay khi module được import.
+
+\subsubsection{Model request và endpoint}
+
+Backend khai báo hai Pydantic model chính cho request:
+
+\begin{itemize}
+    \item \texttt{RegisterStartRequest}: gồm \texttt{name} và \texttt{samples\_required}. Số mẫu bị giới hạn từ 5 đến 80.
+    \item \texttt{PasswordChangeRequest}: gồm \texttt{current\_password} và \texttt{new\_password}, mỗi trường có đúng 6 ký tự.
+\end{itemize}
+
+Các endpoint cấp cao được hiện thực trực tiếp trong \texttt{main.py}, còn nhóm endpoint camera được tách vào router \texttt{get\_camera.py}. Bảng \ref{tab:main_api_endpoints} tóm tắt endpoint hiện thực.
+
+\begin{table}[H]
+\centering
+\caption{Endpoint FastAPI trong hệ thống}
+\label{tab:main_api_endpoints}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Method} & \textbf{Endpoint} & \textbf{Xử lý trong backend} \\
+\hline
+GET & \texttt{/} & Trả về thông tin API, đường dẫn docs, health và camera frame. \\
+\hline
+GET & \texttt{/health} & Trả về trạng thái đơn giản \texttt{healthy}. \\
+\hline
+GET & \texttt{/camera/status} & Gọi \texttt{camera\_worker.status()} để lấy trạng thái camera, đăng ký và phần cứng. \\
+\hline
+POST & \texttt{/api/v1/register/start} & Gọi \texttt{camera\_worker.start\_registration(...)}. \\
+\hline
+POST & \texttt{/api/v1/register/cancel} & Hủy session đăng ký hiện tại. \\
+\hline
+GET & \texttt{/api/v1/register/status} & Lấy tiến trình đăng ký mới nhất. \\
+\hline
+POST & \texttt{/api/v1/keypad/password} & Gọi \texttt{hardware.set\_password(...)} để đổi PIN. \\
+\hline
+GET & \texttt{/api/v1/keypad/status} & Gọi \texttt{hardware.status()} để lấy buffer, failed attempts và lockout. \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Camera router và cache trạng thái}
+
+Module \texttt{backend/routers/get\_camera.py} chứa router cho các endpoint camera và một biến cache \texttt{\_latest\_camera}. Cache này lưu frame mới nhất, số khuôn mặt, danh sách detection, timestamp, camera id, kết quả fuzzy, trạng thái đăng ký và lịch sử gần nhất.
+
+Vì camera worker chạy trong thread riêng còn FastAPI xử lý request trong ngữ cảnh khác, cache được bảo vệ bằng \texttt{threading.Lock}. Hàm \texttt{update\_latest\_camera\_result(...)} là điểm ghi duy nhất từ worker. Các endpoint \texttt{/camera/latest}, \texttt{/camera/frame} và \texttt{/camera/history} chỉ đọc cache qua lock.
+
+\begin{lstlisting}[language=Python, caption={Cấu trúc cache camera mới nhất}]
+_latest_camera = {
+    "mode": "smart_lock",
+    "faces_count": 0,
+    "detections": [],
+    "timestamp": None,
+    "camera_id": "local_v4l2",
+    "frame_base64": None,
+    "fuzzy": None,
+    "registration": None,
+    "history": [],
+}
+\end{lstlisting}
+
+Lịch sử được giới hạn bởi \texttt{MAX\_HISTORY = 100}. Khi số bản ghi vượt quá giới hạn, router giữ lại 100 bản ghi cuối. Cách này tránh tăng bộ nhớ lâu dài khi hệ thống chạy liên tục trên Raspberry Pi.
+
+\subsection{LocalCameraWorker}
+
+\subsubsection{Cấu hình và thành phần con}
+
+\texttt{LocalCameraWorker} trong \texttt{backend/services/local\_camera.py} là thành phần điều phối chính của backend. Constructor đọc cấu hình từ biến môi trường, khởi tạo các service con và chuẩn bị trạng thái runtime.
+
+\begin{table}[H]
+\centering
+\caption{Biến môi trường của camera worker}
+\label{tab:camera_worker_env}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Biến} & \textbf{Mặc định} & \textbf{Ý nghĩa} \\
+\hline
+\texttt{CAMERA\_INDEX} & \texttt{/dev/video0} & Nguồn camera. Có thể là thiết bị V4L2, số index hoặc URL. \\
+\hline
+\texttt{CAMERA\_ID} & \texttt{local\_v4l2} & Tên định danh camera trả về frontend. \\
+\hline
+\texttt{RECOGNIZER\_PATH} & \texttt{custom\_models/smartlock\_lbph\_model.xml} & Đường dẫn model LBPH. \\
+\hline
+\texttt{REGISTERED\_FACES\_DIR} & \texttt{registered\_faces} & Thư mục lưu mẫu khuôn mặt đã đăng ký. \\
+\hline
+\texttt{CAMERA\_PROCESS\_FPS} & 10 & Tần số xử lý frame mục tiêu. \\
+\hline
+\texttt{CAMERA\_RETRY\_DELAY} & 0.25 & Thời gian chờ trước khi đọc lại camera nếu lỗi. \\
+\hline
+\texttt{CAMERA\_JPEG\_QUALITY} & 85 & Chất lượng JPEG khi encode frame cho dashboard. \\
+\hline
+\texttt{CAMERA\_FLIP} & \texttt{false} & Lật ngang frame nếu camera lắp ngược hoặc cần mirror. \\
+\hline
+\texttt{CAMERA\_AUTO\_START} & \texttt{true} & Cho phép worker tự khởi động cùng FastAPI. \\
+\hline
+\end{tabularx}
+\end{table}
+
+Worker tạo các đối tượng sau:
+
+\begin{itemize}
+    \item \texttt{FaceDetection}: phát hiện và nhận diện khuôn mặt.
+    \item \texttt{SmartLockFuzzyDecision}: chuyển detection thành quyết định fuzzy.
+    \item \texttt{FaceRegistrationManager}: quản lý phiên đăng ký và huấn luyện model.
+    \item \texttt{OLEDDisplay}: hiển thị trạng thái trực tiếp trên OLED.
+    \item \texttt{SmartLockHardware}: đọc keypad, xác thực PIN và điều khiển servo.
+\end{itemize}
+
+Hai callback được gắn vào phần cứng: \texttt{on\_unlock} để log nguồn mở khóa và \texttt{on\_keypad\_event} để log sự kiện keypad. Điều này giúp worker quan sát được sự kiện vật lý mà không trộn logic keypad vào vòng lặp camera.
+
+\subsubsection{Khởi động và dừng worker}
+
+Khi \texttt{start()} được gọi, worker lần lượt khởi động OLED, phần cứng và thread camera. Các lỗi OLED hoặc GPIO được bắt và log là non-fatal. Nhờ đó backend vẫn có thể chạy trên máy phát triển không có Raspberry Pi hoặc OLED thật, miễn là camera và dependency phù hợp.
+
+Khi \texttt{stop()} được gọi, worker set \texttt{\_stop\_event}, join thread tối đa 2 giây, release camera, dừng hardware và dừng OLED. Đây là bước quan trọng để tránh giữ thiết bị \texttt{/dev/video0} hoặc pin GPIO sau khi backend đã tắt.
+
+\subsubsection{Vòng lặp xử lý frame}
+
+Hàm \texttt{\_run()} mở camera bằng OpenCV \cite{opencv}. Nếu \texttt{CAMERA\_INDEX} bắt đầu bằng \texttt{/dev/video} hoặc là số, backend mở bằng backend V4L2. Nếu không, giá trị này được truyền trực tiếp vào \texttt{cv2.VideoCapture}; cách này cho phép dùng cả file video hoặc stream URL khi thử nghiệm.
+
+Vòng lặp chính xử lý một frame theo thứ tự:
+
+\begin{enumerate}
+    \item Đọc frame từ camera.
+    \item Lật frame nếu \texttt{CAMERA\_FLIP} bật.
+    \item Gọi \texttt{detector.analyze(frame)} để phát hiện, nhận diện và vẽ bounding box.
+    \item Gọi \texttt{fuzzy.evaluate\_detection(...)} với detection đầu tiên hoặc \texttt{None}.
+    \item Nếu fuzzy trả về \texttt{unlock} và keypad không đang nhập, hiển thị OLED và mở khóa bằng thread riêng.
+    \item Nếu có detection nhưng không unlock, OLED hiển thị tên, action và risk.
+    \item Gọi \texttt{registrar.process\_frame(...)} nếu có session đăng ký.
+    \item Nếu đủ mẫu, gọi \texttt{registrar.train\_model()} và reload recognizer.
+    \item Vẽ overlay action/risk và trạng thái đăng ký lên frame.
+    \item Encode JPEG base64 và cập nhật cache router.
+\end{enumerate}
+
+\begin{lstlisting}[language=Python, caption={Dạng rút gọn vòng lặp frame của LocalCameraWorker}]
+result = self.detector.analyze(frame)
+fuzzy_result = self.fuzzy.evaluate_detection(
+    result["detections"][0] if result["detections"] else None
+)
+
+if not self.hardware.is_keypad_active and fuzzy_result["action"] == "unlock":
+    self.oled.show_access_granted("face")
+    threading.Thread(
+        target=self.hardware.unlock_door,
+        args=("face",),
+        daemon=True,
+    ).start()
+
+registration_event = self.registrar.process_frame(frame, self.detector)
+if registration_event and registration_event["type"] == "registration_training":
+    summary = self.registrar.train_model()
+    self.detector.reload_recognizer(self.recognizer_path)
+
+annotated = self._draw_status(result["annotated_image"], fuzzy_result, registration_event)
+frame_base64 = self._encode_frame(annotated)
+update_latest_camera_result(..., frame_base64=frame_base64, fuzzy=fuzzy_result)
+\end{lstlisting}
+
+Worker dùng \texttt{frame\_delay = 1.0 / process\_fps}. Với mặc định 10 FPS, mỗi vòng xử lý có thời gian ngủ tối đa 0.1 giây sau khi hoàn tất xử lý. Nếu xử lý mất nhiều thời gian hơn, FPS thực tế sẽ thấp hơn cấu hình.
+
+\subsubsection{Trạng thái worker}
+
+Trạng thái worker được lưu trong \texttt{\_status} và bảo vệ bằng \texttt{\_status\_lock}. Các trường chính gồm \texttt{enabled}, \texttt{running}, \texttt{camera\_index}, \texttt{camera\_id}, \texttt{frames\_processed} và \texttt{last\_error}. Hàm \texttt{status()} trộn thêm trạng thái đăng ký và phần cứng để endpoint \texttt{/camera/status} trả về một snapshot đầy đủ.
+
+\subsection{FaceDetection}
+
+\subsubsection{Nạp cascade và recognizer}
+
+Service \texttt{FaceDetection} trong \texttt{backend/services/face\_detection.py} chịu trách nhiệm xử lý ảnh bằng OpenCV \cite{opencv}. Khi khởi tạo, service nạp Haar Cascade mặc định:
+
+\begin{lstlisting}[language=Python, caption={Nạp Haar Cascade frontal face}]
+self._cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+\end{lstlisting}
+
+Sau đó service gọi \texttt{\_load\_recognizer()}. Nếu đường dẫn model không tồn tại hoặc \texttt{cv2.face} không khả dụng, recognizer được để \texttt{None} và hệ thống chạy ở chế độ detection-only. Nếu model tồn tại, backend đọc file XML bằng \texttt{LBPHFaceRecognizer\_create().read(...)} và đọc file JSON cùng tên để ánh xạ label id sang tên người dùng.
+
+\subsubsection{Phát hiện và chọn khuôn mặt}
+
+Hàm \texttt{\_detect\_faces(gray)} gọi:
+
+\begin{lstlisting}[language=Python, caption={Tham số Haar Cascade trong FaceDetection}]
+faces = self._cascade.detectMultiScale(
+    gray,
+    1.1,
+    5,
+    minSize=(30, 30),
+)
+\end{lstlisting}
+
+Kết quả OpenCV được chuyển thành list Python để dễ serialize. Trong \texttt{analyze()}, nếu có nhiều khuôn mặt, hệ thống tính diện tích từng bounding box và giữ lại box lớn nhất. Đây là lựa chọn thực dụng cho khóa cửa một người, đồng thời tránh việc một người phía sau làm thay đổi quyết định fuzzy.
+
+\subsubsection{Nhận diện bằng LBPH}
+
+Với mỗi bounding box $(x,y,w,h)$, ROI grayscale được resize về $100\times100$. Sau đó recognizer dự đoán label và khoảng cách LBPH \cite{lbph2006}:
+
+\begin{lstlisting}[language=Python, caption={Nhận diện ROI bằng LBPH}]
+roi = cv2.resize(gray[y : y + h, x : x + w], (100, 100))
+label_id, confidence = self._recognizer.predict(roi)
+\end{lstlisting}
+
+Ngưỡng nhận diện được khai báo trong class:
+
+\begin{lstlisting}[language=Python, caption={Ngưỡng nhận diện LBPH}]
+UNKNOWN_LABEL = "Unknown"
+RECOGNITION_THRESH = 150.0
+\end{lstlisting}
+
+Nếu \texttt{confidence < 150.0}, label được xem là khớp và ánh xạ sang tên. Nếu không, kết quả là \texttt{Unknown}. Lưu ý \texttt{confidence} ở đây là khoảng cách LBPH, không phải xác suất. Vì vậy code có thêm bước tính \texttt{model\_confidence} để debug:
+
+\begin{equation}
+    model\_confidence = \max\left(0,\ 100 - \frac{70 \times confidence}{150}\right)
+\end{equation}
+
+Trong output API, trường \texttt{confidence} vẫn giữ raw LBPH distance để frontend và fuzzy wrapper có thể xử lý nhất quán.
+
+\subsubsection{Đo illumination và facial angle}
+
+Hàm \texttt{\_estimate\_illumination(...)} lấy trung bình pixel grayscale trong ROI. Hàm \texttt{\_estimate\_facial\_angle(...)} chia ROI thành hai nửa trái/phải, tính độ sáng trung bình từng nửa, sau đó ước lượng độ bất đối xứng. Kết quả được giới hạn tối đa 90 độ và làm tròn 2 chữ số.
+
+Mỗi detection trả về cấu trúc:
+
+\begin{lstlisting}[language=Python, caption={Detection object trả về từ FaceDetection}]
+{
+    "bbox": [int(x), int(y), int(w), int(h)],
+    "name": name,
+    "confidence": round(confidence, 2),
+    "illumination": round(illumination, 2),
+    "facial_angle": round(facial_angle, 2),
+}
+\end{lstlisting}
+
+Ngoài detection, \texttt{analyze()} trả về số mặt, ảnh đã annotate và timestamp ISO. Ảnh annotate được worker dùng để encode thành frame gửi lên dashboard.
+
+\subsubsection{Trích ROI khi đăng ký}
+
+Hàm \texttt{extract\_registration\_face(...)} dùng cùng Haar Cascade nhưng áp dụng tiêu chí nghiêm ngặt hơn. Hàm chỉ chấp nhận đúng một khuôn mặt, ROI hợp lệ, kích thước đủ lớn, ánh sáng trong khoảng cho phép, góc không quá lệch và blur score đủ cao. Nếu đạt, ROI được resize về $100\times100$ và cân bằng histogram.
+
+\begin{table}[H]
+\centering
+\caption{Điều kiện kiểm tra trong \texttt{extract\_registration\_face}}
+\label{tab:extract_registration_checks}
+\begin{tabularx}{\textwidth}{|l|l|X|}
+\hline
+\textbf{Điều kiện} & \textbf{Ngưỡng trong code} & \textbf{Thông báo khi không đạt} \\
+\hline
+Không có mặt & Không có box & \texttt{No face detected} \\
+\hline
+Nhiều mặt & Số box $> 1$ & \texttt{Multiple faces detected} \\
+\hline
+Kích thước mặt & $\min(w,h) < 32$ & \texttt{Move closer to the camera} \\
+\hline
+Thiếu sáng & \texttt{illumination < 35} & \texttt{Face is too dark} \\
+\hline
+Quá sáng & \texttt{illumination > 230} & \texttt{Face is too bright} \\
+\hline
+Góc lệch lớn & \texttt{facial\_angle > 40} & \texttt{Face the camera more directly} \\
+\hline
+Ảnh mờ & \texttt{blur\_score < 20} & \texttt{Frame is too blurry} \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{FaceRegistrationManager}
+
+\subsubsection{Quản lý session đăng ký}
+
+Service \texttt{FaceRegistrationManager} trong \texttt{backend/services/registration.py} quản lý đăng ký khuôn mặt theo session. Mỗi session là một dictionary gồm:
+
+\begin{itemize}
+    \item \texttt{name}: tên hiển thị người dùng nhập.
+    \item \texttt{user\_id}: tên đã slugify để dùng làm thư mục.
+    \item \texttt{user\_dir}: thư mục lưu mẫu ảnh.
+    \item \texttt{samples\_required}: số mẫu cần thu.
+    \item \texttt{accepted}: số mẫu đã chấp nhận.
+    \item \texttt{last\_sample\_time}: thời điểm lưu mẫu gần nhất.
+    \item \texttt{last\_roi}: ROI gần nhất để kiểm tra trùng lặp.
+    \item \texttt{started\_at}: thời điểm bắt đầu session.
+\end{itemize}
+
+Tên người dùng được xử lý bởi \texttt{\_slugify()}, chỉ giữ chữ cái, chữ số, dấu gạch dưới và dấu gạch ngang. Nếu tên sau khi lọc rỗng, hệ thống dùng \texttt{user}. File \texttt{display\_name.txt} được ghi vào thư mục user để giữ lại tên hiển thị gốc.
+
+\subsubsection{Thu mẫu theo frame}
+
+Hàm \texttt{process\_frame(frame, detector)} được worker gọi trên mỗi frame. Nếu không có session, hàm trả về \texttt{None}. Nếu session đang chạy, hàm kiểm tra khoảng cách thời gian tối thiểu giữa hai mẫu bằng \texttt{min\_sample\_interval = 0.25}. Điều này tránh việc lưu quá nhiều frame gần nhau trong cùng một tư thế.
+
+Sau khi gọi \texttt{detector.extract\_registration\_face(...)}, có hai trường hợp:
+
+\begin{itemize}
+    \item Nếu ROI bị từ chối, service trả về event \texttt{registration\_progress} với \texttt{status = waiting} và lý do từ detector. Event chờ bị giới hạn bởi \texttt{min\_status\_interval = 0.6} để không cập nhật UI quá dày.
+    \item Nếu ROI được chấp nhận, service so sánh với ROI trước bằng trung bình \texttt{cv2.absdiff}. Nếu similarity nhỏ hơn 1.5, người dùng được yêu cầu đổi nhẹ tư thế.
+\end{itemize}
+
+Mẫu hợp lệ được lưu dưới dạng JPEG:
+
+\begin{lstlisting}[language=Python, caption={Cách đặt tên file mẫu đăng ký}]
+sample_path = (
+    session["user_dir"]
+    / f"sample_{int(now * 1000)}_{session['accepted']:03d}.jpg"
+)
+\end{lstlisting}
+
+Tên file chứa timestamp millisecond và số thứ tự mẫu, giúp tránh trùng tên và dễ sắp xếp theo thời gian.
+
+\subsubsection{Huấn luyện lại LBPH}
+
+Khi \texttt{accepted >= samples\_required}, event chuyển sang \texttt{registration\_training}. Worker sau đó gọi \texttt{train\_model()}. Hàm này duyệt toàn bộ \texttt{registered\_faces/}, bỏ qua identity có ít hơn 3 mẫu, đọc ảnh grayscale, resize về $100\times100$, tạo label id tăng dần và huấn luyện LBPH:
+
+\begin{lstlisting}[language=Python, caption={Huấn luyện LBPH trong FaceRegistrationManager}]
+recognizer = cv2.face.LBPHFaceRecognizer_create(
+    radius=1,
+    neighbors=8,
+    grid_x=8,
+    grid_y=8,
+)
+recognizer.train(images, np.array(labels, dtype=np.int32))
+recognizer.write(str(self.model_path))
+\end{lstlisting}
+
+Sau khi huấn luyện, model được ghi vào \texttt{custom\_models/smartlock\_lbph\_model.xml}; label map được ghi vào \texttt{custom\_models/smartlock\_lbph\_model.json}. Worker gọi \texttt{detector.reload\_recognizer(...)} ngay sau đó, nên người vừa đăng ký có hiệu lực mà không cần restart backend.
+
+\subsection{FuzzySecurityController và wrapper fuzzy}
+
+Phần cơ sở lý thuyết đã trình bày biến mờ, hàm thành viên và tập luật của bộ điều khiển ở Bảng \ref{tab:fuzzy_inputs}, Bảng \ref{tab:fuzzy_output}, Bảng \ref{tab:fuzzy_rule_groups} và Hình \ref{fig:fuzzy_membership_todo}. Trong chương hiện thực, nội dung cần nhấn mạnh là cách engine fuzzy được đóng gói trong code và cách kết quả được nối vào pipeline camera.
+
+\subsubsection{Cấu hình engine trong code}
+
+Fuzzy controller được hiện thực trong \texttt{backend/infra/fuzzy\_controller.py} bằng pyfuzzylite \cite{fuzzylite}. Controller tạo một \texttt{fl.Engine} tên \texttt{SmartLockSecurity}, khai báo ba input variable, một output variable và một \texttt{RuleBlock} tên \texttt{security\_rules}. Các tham số Gaussian trong code bám trực tiếp theo các bảng ở chương cơ sở lý thuyết.
+
+\begin{table}[H]
+\centering
+\caption{Cấu hình suy luận fuzzy trong hiện thực}
+\label{tab:fuzzy_engine_impl}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{Thành phần} & \textbf{Hiện thực trong code} \\
+\hline
+Input & \texttt{model\_confidence}, \texttt{illumination}, \texttt{facial\_angle}. \\
+\hline
+Output & \texttt{security\_risk}, miền 0--1. \\
+\hline
+Hàm thành viên & Gaussian, với các tâm và độ rộng như Bảng \ref{tab:fuzzy_inputs} và Bảng \ref{tab:fuzzy_output}. \\
+\hline
+AND/OR & \texttt{Minimum()} cho conjunction và \texttt{Maximum()} cho disjunction. \\
+\hline
+Implication/Aggregation & \texttt{Minimum()} để cắt output của từng luật và \texttt{Maximum()} để gom nhiều luật. \\
+\hline
+Defuzzification & \texttt{Centroid(resolution=200)}. \\
+\hline
+Fail-safe & \texttt{default\_value = 1.0}; nếu engine không sinh được kết quả hợp lệ thì hệ thống xem rủi ro là cao nhất. \\
+\hline
+\end{tabularx}
+\end{table}
+
+Quy tắc fail-safe là điểm quan trọng trong hiện thực. Fuzzy engine không được phép trả về giá trị mặc định theo hướng mở khóa, vì lỗi thư viện hoặc lỗi luật không nên biến thành quyền truy cập hợp lệ.
+
+\subsubsection{Rule block và ánh xạ action}
+
+Các luật được thêm vào \texttt{security\_rules} theo nhóm đã tóm tắt ở Bảng \ref{tab:fuzzy_rule_groups}. Sau khi \texttt{self.\_engine.process()} hoàn tất, controller đọc giá trị rõ của \texttt{security\_risk} và gọi \texttt{\_risk\_to\_action(...)} để chuyển thành hành động cụ thể.
+
+\begin{table}[H]
+\centering
+\caption{Ngưỡng action trong \texttt{\_risk\_to\_action}}
+\label{tab:fuzzy_action_impl}
+\begin{tabular}{|c|l|l|}
+\hline
+\textbf{Điều kiện} & \textbf{Action} & \textbf{Details} \\
+\hline
+$risk < 0.30$ & \texttt{unlock} & \texttt{Actuate Solenoid (Unlock)} \\
+\hline
+$risk < 0.60$ & \texttt{otp} & \texttt{Request 2nd Factor (OTP)} \\
+\hline
+$risk < 0.85$ & \texttt{deny} & \texttt{Deny Access \& Log Event} \\
+\hline
+$risk < 1.01$ & \texttt{lockout} & \texttt{Immediate Lockout \& Alert} \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{Kết quả trả về}
+
+Hàm \texttt{evaluate(confidence, illumination, facial\_angle)} gán giá trị vào ba input, gọi engine xử lý, đọc \texttt{security\_risk}, sau đó trả về dictionary gồm action, mô tả action và các input đã dùng:
+
+\begin{lstlisting}[language=Python, caption={Dạng dữ liệu fuzzy decision}]
+{
+    "security_risk": 0.2145,
+    "action": "unlock",
+    "details": "Actuate Solenoid (Unlock)",
+    "inputs": {
+        "model_confidence": 82.10,
+        "illumination": 132.40,
+        "facial_angle": 8.20,
+    },
+}
+\end{lstlisting}
+
+\subsubsection{Wrapper \texttt{SmartLockFuzzyDecision}}
+
+Wrapper trong \texttt{backend/services/fuzzy\_logic.py} nhận detection từ \texttt{FaceDetection}. Nếu không có detection, wrapper trả về \texttt{deny} với risk 1.0. Nếu \texttt{name} là \texttt{Unknown}, \texttt{model\_confidence} được đặt bằng 0. Nếu nhận diện được người dùng, khoảng cách LBPH được scale thành confidence:
+
+\begin{equation}
+    C_{model} = \max\left(0,\ 100 - \frac{70 \times distance}{150}\right)
+\end{equation}
+
+Wrapper cũng chứa fallback class \texttt{\_FuzzyController} nếu import pyfuzzylite thất bại. Fallback dùng các ngưỡng tĩnh như confidence 30, 47, 66; illumination 60--195; facial angle 35. Cách này giúp backend vẫn fail-safe thay vì crash khi môi trường thiếu fuzzy library.
+
+\subsection{SmartLockHardware}
+
+\subsubsection{Cấu hình GPIO}
+
+Module \texttt{backend/services/hardware\_io.py} hiện thực keypad 4x4 và servo. Code dùng \texttt{RPi.GPIO} thông qua package tương thích Raspberry Pi. Các chân mặc định:
+
+\begin{table}[H]
+\centering
+\caption{Hằng số phần cứng trong \texttt{hardware\_io.py}}
+\label{tab:hardware_io_constants}
+\begin{tabular}{|l|l|l|}
+\hline
+\textbf{Hằng số} & \textbf{Giá trị} & \textbf{Ý nghĩa} \\
+\hline
+\texttt{\_DEFAULT\_ROW\_PINS} & 17, 27, 22, 5 & Bốn hàng keypad. \\
+\hline
+\texttt{\_DEFAULT\_COL\_PINS} & 6, 13, 19, 26 & Bốn cột keypad. \\
+\hline
+\texttt{\_DEFAULT\_SERVO\_PIN} & 18 & Chân PWM điều khiển servo. \\
+\hline
+\texttt{\_PASSWORD\_LENGTH} & 6 & Độ dài mã PIN. \\
+\hline
+\texttt{\_DEFAULT\_PASSWORD} & \texttt{123456} & PIN mặc định khi backend khởi động. \\
+\hline
+\texttt{\_DEBOUNCE\_MS} & 250 & Debounce phần cứng cho event GPIO. \\
+\hline
+\texttt{\_INPUT\_TIMEOUT} & 10.0 & Thời gian xóa buffer nếu người dùng dừng nhập. \\
+\hline
+\texttt{\_SERVO\_FREQ} & 50 & Tần số PWM servo. \\
+\hline
+\texttt{\_SERVO\_UNLOCK\_DUTY} & 7.5 & Duty cycle mở khóa. \\
+\hline
+\texttt{\_SERVO\_LOCK\_DUTY} & 2.5 & Duty cycle khóa lại. \\
+\hline
+\texttt{\_UNLOCK\_DURATION} & 5.0 & Thời gian giữ cửa mở. \\
+\hline
+\end{tabular}
+\end{table}
+
+Trong \texttt{start()}, hệ thống đặt chế độ BCM, cấu hình hàng keypad là output mức HIGH, cột keypad là input pull-down, cấu hình servo là output PWM 50 Hz, sau đó gắn interrupt cạnh rising cho từng cột.
+
+\subsubsection{Quét keypad}
+
+Khi người dùng nhấn phím, một cột nhận mức HIGH và callback \texttt{\_col\_interrupt(col\_pin)} được gọi. Callback kiểm tra \texttt{\_running}, áp dụng debounce mềm \texttt{\_DEBOUNCE\_THRESHOLD = 0.25}, rồi gọi \texttt{\_scan\_key(col\_pin)}.
+
+Trong \texttt{\_scan\_key}, code tạm kéo tất cả hàng xuống LOW, sau đó lần lượt kéo từng hàng lên HIGH và đọc lại cột đã interrupt. Nếu cột đang HIGH ở hàng nào, phím được xác định bằng ma trận \texttt{\_KEYMAP}.
+
+\begin{lstlisting}[language=Python, caption={Keymap của keypad 4x4}]
+_KEYMAP = [
+    ["1", "2", "3", "A"],
+    ["4", "5", "6", "B"],
+    ["7", "8", "9", "C"],
+    ["*", "0", "#", "D"],
+]
+\end{lstlisting}
+
+Phím \texttt{*} xóa buffer, phím \texttt{\#} submit PIN, các phím không phải chữ số bị bỏ qua. Nếu buffer đạt 6 chữ số, hệ thống tự submit mà không cần nhấn \texttt{\#}.
+
+\subsubsection{Xác thực PIN và lockout}
+
+PIN được hash bằng SHA-256:
+
+\begin{lstlisting}[language=Python, caption={Hàm hash PIN}]
+def _hash_pin(pin: str) -> str:
+    return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+\end{lstlisting}
+
+Khi submit, code ghép buffer thành chuỗi, xóa buffer, kiểm tra lockout, kiểm tra độ dài và so sánh hash. Nếu đúng, \texttt{\_failed\_attempts} được reset, OLED hiển thị access granted và một thread daemon gọi \texttt{unlock\_door("keypad")}. Nếu sai, số lần sai tăng lên. Sau 5 lần sai, \texttt{\_lockout\_until} được đặt bằng thời điểm hiện tại cộng 30 giây.
+
+\subsubsection{Điều khiển servo}
+
+Hàm \texttt{unlock\_door(source)} dùng \texttt{\_door\_lock} để đảm bảo không có hai luồng mở khóa đồng thời. Khi mở khóa, servo nhận duty cycle 7.5 trong 0.5 giây rồi duty về 0. Sau đó hệ thống gọi callback \texttt{on\_unlock}, hiển thị OLED door open, chờ \texttt{unlock\_duration} giây, rồi khóa lại bằng duty cycle 2.5 trong 0.5 giây.
+
+Việc đưa duty cycle về 0 sau mỗi lần quay giúp giảm rung và tiếng kêu của servo. Đây là chi tiết cần thiết khi chạy trên mô hình khóa cửa vật lý.
+
+\subsubsection{Đổi mật khẩu qua API}
+
+Hàm \texttt{set\_password(current\_pin, new\_pin)} được endpoint \texttt{/api/v1/keypad/password} gọi. Hàm chỉ chấp nhận \texttt{new\_pin} có đúng 6 chữ số, sau đó hash \texttt{current\_pin} để so sánh với hash hiện tại. Nếu đúng, hash mới được lưu vào biến \texttt{\_password\_hash}. Trong hiện thực hiện tại, PIN mới tồn tại trong bộ nhớ runtime; khi restart backend, PIN trở về mặc định nếu chưa có cơ chế lưu bền vững.
+
+\subsection{OLEDDisplay}
+
+\texttt{OLEDDisplay} trong \texttt{backend/services/oled\_display.py} điều khiển màn hình SSD1306 128x64 bằng SPI qua luma.oled \cite{lumaoled}. Các hằng số phần cứng:
+
+\begin{itemize}
+    \item \texttt{\_WIDTH = 128}, \texttt{\_HEIGHT = 64}.
+    \item \texttt{\_SPI\_PORT = 0}, \texttt{\_SPI\_DEVICE = 0}.
+    \item \texttt{\_GPIO\_DC = 24}, \texttt{\_GPIO\_RST = 25}.
+\end{itemize}
+
+Khi \texttt{start()} được gọi, service tạo serial SPI, tạo device \texttt{ssd1306} và hiển thị màn hình idle. Nếu khởi tạo thất bại, lỗi được log và \texttt{\_device} giữ \texttt{None}; các hàm render sau đó return sớm. Cách này giúp backend không bị dừng khi chạy trên môi trường không có OLED.
+
+Mọi thao tác vẽ đi qua hàm \texttt{\_render(draw\_fn)}. Hàm này tạo ảnh nhị phân \texttt{Image.new("1", (128, 64), 0)}, tạo \texttt{ImageDraw}, gọi callback vẽ và gửi ảnh tới thiết bị. \texttt{\_lock} được dùng để tránh hai thread cùng ghi lên OLED, vì cả worker camera và keypad thread đều có thể cập nhật màn hình.
+
+\begin{table}[H]
+\centering
+\caption{Các màn hình OLED đã hiện thực}
+\label{tab:oled_screens}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{Hàm} & \textbf{Nội dung hiển thị} \\
+\hline
+\texttt{show\_idle()} & Logo chữ \texttt{SmartLock} và trạng thái \texttt{Ready}. \\
+\hline
+\texttt{show\_enter\_pin(...)} & Tiêu đề nhập PIN, 6 dấu chấm và số chữ số còn lại. \\
+\hline
+\texttt{show\_access\_granted(...)} & ACCESS GRANTED và nguồn mở khóa \texttt{PIN} hoặc \texttt{Face}. \\
+\hline
+\texttt{show\_access\_denied(...)} & ACCESS DENIED và thông báo lỗi. \\
+\hline
+\texttt{show\_lockout(...)} & LOCKED, thông báo quá nhiều lần thử và số giây chờ. \\
+\hline
+\texttt{show\_door\_open(...)} & DOOR OPEN và thời gian đóng lại. \\
+\hline
+\texttt{show\_face\_detected(...)} & Tên người dùng, action fuzzy và risk. \\
+\hline
+\texttt{show\_registration(...)} & Tiến trình đăng ký, tên người dùng và progress bar. \\
+\hline
+\end{tabularx}
+\end{table}
+
+\subsection{Frontend Next.js}
+
+\subsubsection{Trang chính}
+
+Frontend được đặt trong thư mục \texttt{frontend/} và dùng Next.js \cite{nextjs}. File \texttt{frontend/src/app/page.tsx} là trang dashboard chính. Trang này giữ state \texttt{faceCount}, render \texttt{Header}, khối \texttt{LiveVideoStream}, khối mô tả pipeline và component \texttt{PasswordChange}.
+
+Frontend không xử lý ảnh và không truy cập camera trực tiếp. Mọi dữ liệu đều lấy từ backend qua HTTP. URL backend được đọc từ \texttt{NEXT\_PUBLIC\_API\_URL}, mặc định \texttt{http://localhost:8000}.
+
+\subsubsection{LiveVideoStream}
+
+Component \texttt{LiveVideoStream} định nghĩa các interface TypeScript cho detection, fuzzy decision, registration status và payload frame. Các trường frontend mong đợi trùng với response của router camera:
+
+\begin{lstlisting}[language=Python, caption={Payload frame ở mức dữ liệu frontend}]
+{
+    "success": true,
+    "mode": "smart_lock",
+    "frame_base64": "...",
+    "faces_count": 1,
+    "detections": [...],
+    "timestamp": "...",
+    "camera_id": "local_v4l2",
+    "fuzzy": {...},
+    "registration": {...},
+}
+\end{lstlisting}
+
+Component gọi \texttt{/api/v1/camera/frame} bằng \texttt{fetch} với \texttt{cache: 'no-store'}. Mặc định, polling interval là 250 ms. Khi response thành công, hàm \texttt{applyStreamPayload} cập nhật \texttt{streamData}, \texttt{registrationStatus}, \texttt{lastUpdate} và gọi callback \texttt{onCountUpdate}.
+
+Frame được hiển thị bằng cách gắn base64 vào thẻ ảnh:
+
+\begin{lstlisting}[language=Python, caption={Biểu diễn frame JPEG base64 trên frontend}]
+src={`data:image/jpeg;base64,${streamData.frame_base64}`}
+\end{lstlisting}
+
+Component cũng hiển thị bốn nhóm thông tin runtime: số khuôn mặt, identity, action/risk và thời gian từ lần cập nhật cuối. Nếu có detection, dashboard hiển thị thêm LBPH distance, illumination và facial angle.
+
+\subsubsection{Đăng ký khuôn mặt từ frontend}
+
+Trong \texttt{LiveVideoStream}, người dùng nhập tên vào ô \texttt{registrationName} và bấm \texttt{Register}. Component gửi request:
+
+\begin{lstlisting}[language=Python, caption={Request bắt đầu đăng ký khuôn mặt}]
+fetch(`${apiUrl}/api/v1/register/start`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, samples_required: 30 }),
+})
+\end{lstlisting}
+
+Progress bar được tính bằng:
+
+\begin{equation}
+    progress = \min\left(100,\ \frac{accepted}{required} \times 100\right)
+\end{equation}
+
+Frontend cũng có nút cancel gọi \texttt{/api/v1/register/cancel}. Trạng thái đăng ký được cập nhật liên tục từ payload camera nên người dùng thấy được các thông báo như đang chờ mặt hợp lệ, mẫu được chấp nhận hoặc đang huấn luyện.
+
+\subsubsection{PasswordChange}
+
+Component \texttt{PasswordChange} quản lý hai state \texttt{currentPassword} và \texttt{newPassword}. Hàm \texttt{handleNumericInput} loại bỏ ký tự không phải số và cắt tối đa 6 ký tự. Trước khi gửi request, form kiểm tra:
+
+\begin{itemize}
+    \item Mật khẩu cũ phải đúng 6 chữ số.
+    \item Mật khẩu mới phải đúng 6 chữ số.
+    \item Mật khẩu mới không được trùng mật khẩu cũ.
+\end{itemize}
+
+Khi hợp lệ, frontend gửi POST tới \texttt{/api/v1/keypad/password} với body JSON:
+
+\begin{lstlisting}[language=Python, caption={Request đổi mật khẩu keypad}]
+{
+    "current_password": currentPassword,
+    "new_password": newPassword,
+}
+\end{lstlisting}
+
+Nếu backend trả \texttt{success: true}, component xóa hai ô nhập và hiển thị thông báo thành công. Nếu lỗi, component hiển thị message trả về từ backend hoặc thông báo fallback.
+
+\subsection{Các script hỗ trợ}
+
+Repository có các script hỗ trợ huấn luyện, đánh giá, benchmark và kiểm tra nhanh. Các script này không nằm trong luồng runtime chính của FastAPI, nhưng hữu ích khi chuẩn bị model hoặc đo hiệu năng.
+
+\begin{table}[H]
+\centering
+\caption{Script hỗ trợ trong repository}
+\label{tab:support_scripts}
+\begin{tabularx}{\textwidth}{|l|X|}
+\hline
+\textbf{Script} & \textbf{Vai trò} \\
+\hline
+\texttt{train\_lbph.py} & Huấn luyện LBPH trên dataset dạng thư mục identity, tạo model XML và label map JSON. \\
+\hline
+\texttt{train\_detectors.py} & Thử nghiệm huấn luyện detector khác như HOG/SVM hoặc dlib trên dữ liệu WIDER FACE. \\
+\hline
+\texttt{evaluate\_custom\_detectors.py} & Đánh giá detector tự huấn luyện, phục vụ so sánh khi chọn hướng phát hiện khuôn mặt. \\
+\hline
+\texttt{ablation\_pipeline.py} & So sánh các lựa chọn detection/recognition ở mức ablation. \\
+\hline
+\texttt{backend/benchmark\_pipeline.py} & Benchmark latency từng bước, RAM, CPU và ước lượng năng lượng; có mock GPIO/OLED để chạy trên máy không có phần cứng. \\
+\hline
+\texttt{test\_haar.py} & Kiểm tra nhanh Haar Cascade với camera hoặc frame thử nghiệm. \\
+\hline
+\texttt{visualize\_detector.py} & Trực quan hóa kết quả detector để debug bounding box. \\
+\hline
+\texttt{test\_camera.py} & Prototype cũ cho luồng camera/WebSocket, không phải pipeline chính hiện tại. \\
+\hline
+\end{tabularx}
+\end{table}

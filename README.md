@@ -189,10 +189,25 @@ FastAPI exposes the following endpoints (default base URL: `http://localhost:800
 ## 🧪 Diagnostics & Verification
 
 ### Pipeline Benchmarking
-To profile latency across each pipeline step, memory consumption, CPU utilization, and estimate RPi power consumption (without physical hardware), run:
+To profile latency, FPS, RAM, CPU utilization, and Raspberry Pi telemetry on the edge device, run:
 ```bash
-python backend/benchmark_pipeline.py 50
+python3 backend/benchmark_pipeline.py \
+  --source camera \
+  --camera /dev/video0 \
+  --duration 60 \
+  --warmup 20 \
+  --width 640 \
+  --height 480 \
+  --capture-fps 10 \
+  --output-dir benchmark_results/pi_camera
 ```
+
+For a quick smoke test without a camera:
+```bash
+python3 backend/benchmark_pipeline.py --source synthetic --frames 100 --output-dir benchmark_results/synthetic
+```
+
+The benchmark groups frames into no-face and face-detected cases automatically. To populate both report columns in one run, leave the camera empty for part of the run and stand in front of it for the remaining part. It writes `summary.json`, `summary.md`, `summary_table.tex`, and per-frame `frames.csv` into the output directory.
 
 
 ### Face Registration

@@ -123,6 +123,8 @@ from pydantic import BaseModel, Field
 from contextlib import asynccontextmanager
 
 from routers import get_camera
+from routers import logs as logs_router
+from services.database import db as log_db
 from services.local_camera import camera_worker
 from services.benchmark_runner import benchmark_runner
 
@@ -134,11 +136,14 @@ logger = logging.getLogger("smartlock")
 async def lifespan(app: FastAPI):
     # Startup logic
     logger.info("Camera worker starting")
+    log_db.log_system(component="api", message="SmartLock API starting up", level="INFO")
     camera_worker.start()
     yield
     # Shutdown logic
     logger.info("Camera worker stopping")
     camera_worker.stop()
+    log_db.log_system(component="api", message="SmartLock API shut down", level="INFO")
+    log_db.close()
 
 
 class RegisterStartRequest(BaseModel):
@@ -191,6 +196,7 @@ app.add_middleware(
 )
 
 app.include_router(get_camera.router, prefix="/api/v1", tags=["camera"])
+app.include_router(logs_router.router)
 
 
 @app.get("/", tags=["root"])
@@ -227,6 +233,52 @@ async def cancel_registration():
 @app.get("/api/v1/register/status", tags=["registration"])
 async def registration_status():
     return camera_worker.registration_status()
+
+
+@app.get("/api/v1/register/list", tags=["registration"])
+async def list_registered_faces():
+    """
+    Return a list of all registered face identities.
+    Each entry includes user_id, display_name, sample_count, and registered_at
+    (mtime of the display_name.txt file, or the oldest sample).
+    """
+    import time as _time
+    from pathlib import Path as _Path
+
+    faces_dir = _Path(camera_worker.faces_dir)
+    if not faces_dir.exists():
+        return {"identities": [], "total": 0}
+
+    identities = []
+    for user_dir in sorted(p for p in faces_dir.iterdir() if p.is_dir()):
+        samples = sorted(user_dir.glob("*.jpg"))
+        if not samples:
+            continue
+
+        display_name_path = user_dir / "display_name.txt"
+        display_name = user_dir.name
+        if display_name_path.exists():
+            display_name = display_name_path.read_text(encoding="utf-8").strip()
+
+        # registered_at: mtime of display_name.txt, fallback to oldest sample
+        reg_ts = (
+            display_name_path.stat().st_mtime
+            if display_name_path.exists()
+            else samples[0].stat().st_mtime
+        )
+
+        # last_sample: mtime of newest sample
+        last_sample_ts = samples[-1].stat().st_mtime
+
+        identities.append({
+            "user_id": user_dir.name,
+            "display_name": display_name,
+            "sample_count": len(samples),
+            "registered_at": reg_ts,
+            "last_sample_at": last_sample_ts,
+        })
+
+    return {"identities": identities, "total": len(identities)}
 
 
 @app.post("/api/v1/keypad/password", tags=["keypad"])

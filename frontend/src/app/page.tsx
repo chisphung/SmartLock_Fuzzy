@@ -5,6 +5,7 @@ import Header from '@/components/Header';
 import LiveVideoStream from '@/components/LiveVideoStream';
 import PasswordChange from '@/components/PasswordChange';
 import BenchmarkPanel from '@/components/BenchmarkPanel';
+import RegisteredFaces from '@/components/RegisteredFaces';
 
 export default function Home() {
   const [faceCount, setFaceCount] = useState(0);
@@ -29,6 +30,9 @@ export default function Home() {
 
               <LiveVideoStream onCountUpdate={setFaceCount} />
             </div>
+
+            {/* Registered faces panel – full width on small screens, under camera on large */}
+            <RegisteredFaces />
           </section>
 
           <aside className="space-y-6">

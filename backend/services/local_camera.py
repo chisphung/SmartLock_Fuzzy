@@ -5,6 +5,7 @@ local_camera.py - Background camera worker for the FastAPI backend.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import threading
 import time
@@ -13,11 +14,14 @@ from pathlib import Path
 import cv2
 
 from routers.get_camera import update_latest_camera_result
+from services.database import db as log_db
 from services.face_detection import FaceDetection
 from services.fuzzy_logic import SmartLockFuzzyDecision
 from services.hardware_io import SmartLockHardware
 from services.oled_display import OLEDDisplay
 from services.registration import FaceRegistrationManager
+
+_cam_logger = logging.getLogger("smartlock.camera")
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -170,6 +174,21 @@ class LocalCameraWorker:
                     and fuzzy_result.get("action") == "unlock"
                 ):
                     self.oled.show_access_granted("face")
+                    # --- Log face unlock to database ---
+                    det = result["detections"][0] if result["detections"] else {}
+                    try:
+                        log_db.log_access(
+                            source="face",
+                            action="unlock",
+                            person_name=det.get("name"),
+                            confidence=fuzzy_result.get("inputs", {}).get("model_confidence"),
+                            security_risk=fuzzy_result.get("security_risk"),
+                            illumination=fuzzy_result.get("inputs", {}).get("illumination"),
+                            facial_angle=fuzzy_result.get("inputs", {}).get("facial_angle"),
+                            details=fuzzy_result.get("details"),
+                        )
+                    except Exception as _db_exc:
+                        _cam_logger.warning(f"[Camera] DB log_access failed: {_db_exc}")
                     threading.Thread(
                         target=self.hardware.unlock_door,
                         args=("face",),
@@ -186,6 +205,22 @@ class LocalCameraWorker:
                         fuzzy_result.get("action", "deny"),
                         fuzzy_result.get("security_risk", 1.0),
                     )
+                    # --- Log non-unlock face decisions to database ---
+                    _action = fuzzy_result.get("action", "deny")
+                    if _action in ("deny", "lockout", "otp"):
+                        try:
+                            log_db.log_access(
+                                source="face",
+                                action=_action,
+                                person_name=det.get("name"),
+                                confidence=fuzzy_result.get("inputs", {}).get("model_confidence"),
+                                security_risk=fuzzy_result.get("security_risk"),
+                                illumination=fuzzy_result.get("inputs", {}).get("illumination"),
+                                facial_angle=fuzzy_result.get("inputs", {}).get("facial_angle"),
+                                details=fuzzy_result.get("details"),
+                            )
+                        except Exception as _db_exc:
+                            _cam_logger.warning(f"[Camera] DB log_access failed: {_db_exc}")
 
                 registration_event = self.registrar.process_frame(frame, self.detector)
                 if registration_event and registration_event.get("type") == "registration_training":
@@ -291,13 +326,36 @@ class LocalCameraWorker:
 
     def _on_hardware_unlock(self, source: str, timestamp: float) -> None:
         """Called by SmartLockHardware when the door is unlocked."""
-        print(f"[Camera] Door unlocked by {source} at {timestamp:.0f}")
+        _cam_logger.info(f"[Camera] Door unlocked by {source} at {timestamp:.0f}")
+        if source == "keypad":
+            # Keypad unlock: log to access_logs as well
+            try:
+                log_db.log_access(
+                    source="keypad",
+                    action="unlock",
+                    details="Correct password – door unlocking",
+                    timestamp=timestamp,
+                )
+            except Exception as _db_exc:
+                _cam_logger.warning(f"[Camera] DB log_access (keypad unlock) failed: {_db_exc}")
 
     def _on_keypad_event(self, event: dict) -> None:
         """Called by SmartLockHardware on any keypad event."""
         etype = event.get("type", "")
         msg = event.get("message", "")
-        print(f"[Keypad] {etype}: {msg}")
+        _cam_logger.info(f"[Keypad] {etype}: {msg}")
+        try:
+            log_db.log_keypad_event(
+                event_type=etype,
+                message=msg,
+                buffer_length=event.get("buffer_length"),
+                remaining=event.get("remaining"),
+                failed_attempts=event.get("failed_attempts"),
+                lockout_seconds=event.get("lockout_seconds"),
+                timestamp=event.get("timestamp"),
+            )
+        except Exception as _db_exc:
+            _cam_logger.warning(f"[Camera] DB log_keypad_event failed: {_db_exc}")
 
 
 camera_worker = LocalCameraWorker()

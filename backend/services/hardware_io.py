@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import Callable
 
 import RPi.GPIO as GPIO
@@ -49,9 +51,56 @@ _SERVO_LOCK_DUTY = 2.5
 _UNLOCK_DURATION = 5.0
 
 
+def _resolve_password_store() -> Path:
+    """Return the path to the persistent password-hash file."""
+    data_dir_env = os.environ.get("SMARTLOCK_DATA_DIR")
+    if data_dir_env:
+        base = Path(data_dir_env).expanduser()
+    else:
+        # <repo_root>/backend/data/
+        base = Path(__file__).resolve().parents[1] / "data"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / "password.hash"
+
+
+_PASSWORD_STORE_PATH: Path = _resolve_password_store()
+
+
 def _hash_pin(pin: str) -> str:
     """Return SHA-256 hex digest of a PIN string."""
     return hashlib.sha256(pin.encode("utf-8")).hexdigest()
+
+
+def _load_password_hash(default_password: str) -> str:
+    """
+    Load the persisted password hash from disk.
+    Falls back to hashing *default_password* if the file is absent or corrupt.
+    """
+    try:
+        stored = _PASSWORD_STORE_PATH.read_text(encoding="utf-8").strip()
+        if len(stored) == 64 and all(c in "0123456789abcdef" for c in stored):
+            logger.info("[Hardware] Loaded persisted password hash from disk.")
+            return stored
+        logger.warning("[Hardware] Password store file is corrupt – using default.")
+    except FileNotFoundError:
+        logger.info("[Hardware] No password store found – using default password.")
+    except Exception as exc:
+        logger.error(f"[Hardware] Error reading password store: {exc} – using default.")
+    # First-time or fallback: persist the default hash right away
+    _save_password_hash(_hash_pin(default_password))
+    return _hash_pin(default_password)
+
+
+def _save_password_hash(hash_hex: str) -> None:
+    """Write the password hash atomically to disk."""
+    try:
+        tmp = _PASSWORD_STORE_PATH.with_suffix(".tmp")
+        tmp.write_text(hash_hex, encoding="utf-8")
+        tmp.replace(_PASSWORD_STORE_PATH)  # atomic on POSIX, best-effort on Windows
+        logger.debug("[Hardware] Password hash persisted to disk.")
+    except Exception as exc:
+        logger.error(f"[Hardware] Failed to persist password hash: {exc}")
+
 
 
 class SmartLockHardware:
@@ -82,7 +131,7 @@ class SmartLockHardware:
         self.SERVO_PIN = servo_pin
         self._oled = oled
 
-        self._password_hash = _hash_pin(default_password)
+        self._password_hash = _load_password_hash(default_password)
 
         self.unlock_duration = unlock_duration
         self._servo_pwm: GPIO.PWM | None = None
@@ -365,7 +414,7 @@ class SmartLockHardware:
             self._door_lock.release()
 
     def set_password(self, current_pin: str, new_pin: str) -> dict:
-        """Change the door password."""
+        """Change the door password and persist the new hash to disk."""
         if len(new_pin) != _PASSWORD_LENGTH or not new_pin.isdigit():
             return {
                 "success": False,
@@ -375,8 +424,10 @@ class SmartLockHardware:
         if _hash_pin(current_pin) != self._password_hash:
             return {"success": False, "message": "Current password is incorrect."}
 
-        self._password_hash = _hash_pin(new_pin)
-        logger.info("[Hardware] Password changed successfully.")
+        new_hash = _hash_pin(new_pin)
+        self._password_hash = new_hash
+        _save_password_hash(new_hash)
+        logger.info("[Hardware] Password changed and persisted successfully.")
         return {"success": True, "message": "Password updated."}
 
     @property

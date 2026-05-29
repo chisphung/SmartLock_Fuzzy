@@ -281,6 +281,84 @@ async def list_registered_faces():
     return {"identities": identities, "total": len(identities)}
 
 
+@app.get("/api/v1/register/{user_id}/samples", tags=["registration"])
+async def list_user_samples(user_id: str):
+    """
+    Return metadata for all sample images captured during registration
+    for the given user_id.  Filenames are safe (no path traversal).
+    """
+    import re as _re
+    from pathlib import Path as _Path
+
+    # Sanitise user_id – only allow slug characters
+    if not _re.match(r"^[A-Za-z0-9_-]+$", user_id):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+
+    faces_dir = _Path(camera_worker.faces_dir)
+    user_dir = faces_dir / user_id
+
+    if not user_dir.is_dir():
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="User not found")
+
+    samples = sorted(user_dir.glob("*.jpg"))
+    result = []
+    for s in samples:
+        stat = s.stat()
+        result.append({
+            "filename": s.name,
+            "url": f"/api/v1/register/{user_id}/samples/{s.name}",
+            "size_bytes": stat.st_size,
+            "captured_at": stat.st_mtime,
+        })
+
+    display_name_path = user_dir / "display_name.txt"
+    display_name = (
+        display_name_path.read_text(encoding="utf-8").strip()
+        if display_name_path.exists()
+        else user_id
+    )
+
+    return {
+        "user_id": user_id,
+        "display_name": display_name,
+        "sample_count": len(result),
+        "samples": result,
+    }
+
+
+@app.get("/api/v1/register/{user_id}/samples/{filename}", tags=["registration"])
+async def get_sample_image(user_id: str, filename: str):
+    """Serve a single registration sample image as JPEG."""
+    import re as _re
+    from pathlib import Path as _Path
+    from fastapi import HTTPException
+    from fastapi.responses import FileResponse
+
+    if not _re.match(r"^[A-Za-z0-9_-]+$", user_id):
+        raise HTTPException(status_code=400, detail="Invalid user_id")
+    # Only allow safe filenames: alphanumeric + underscore + hyphen + dot
+    if not _re.match(r"^[A-Za-z0-9_\-\.]+\.jpg$", filename):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    faces_dir = _Path(camera_worker.faces_dir)
+    image_path = faces_dir / user_id / filename
+
+    # Resolve to prevent path traversal
+    try:
+        resolved = image_path.resolve()
+        base = faces_dir.resolve()
+        resolved.relative_to(base)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Path traversal denied")
+
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+
+    return FileResponse(str(resolved), media_type="image/jpeg")
+
+
 @app.post("/api/v1/keypad/password", tags=["keypad"])
 async def change_keypad_password(request: PasswordChangeRequest):
     return camera_worker.hardware.set_password(
